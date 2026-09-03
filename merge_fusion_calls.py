@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""Merge the fusion_annotation and filtered_fusions files into one CSV for svm_text.py.
+
+fusion_annotation carries all of its columns through unchanged (its ``TF`` column
+is renamed ``TF_f1``). ``--fusion-annotation`` accepts one or two files; two files
+must share the same column names (any order) and are stacked row-wise before
+anything else, with overlapping fusions left un-deduplicated. filtered_fusions is
+left-joined onto fusion_annotation on a composite ``fusion_key`` and contributes
+its own columns (its ``TF`` becomes ``TF_f2``).
+
+fusion_key format
+-----------------
+    GENE1::GENE2|chr1:pos1|chr2:pos2
+
+- gene pair: 5'->3', order-sensitive, taken from the fusion string
+- chr: leading ``chr`` stripped ("chr17" and "17" compare equal)
+- pos: bare integer ("8500970.0" tolerated)
+
+The same key is built for both files, so a fusion_annotation row and a
+filtered_fusions row match only when their gene pair and both breakpoint loci
+(chr + pos, in order) agree. Strand is kept as data but not used for matching.
+The key is written to the output so file 4 can later derive the same string and
+join on it.
+
+CallMethod caller flags
+-----------------------
+``CallMethod`` (from fusion_annotation) is a letter set naming the callers that
+made each fusion -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
+three 0/1 columns appended at the end of the output: ``Arriba`` (letter ``A``),
+``FusionCatcher`` (``F``), ``StarFusion`` (``S``). The check is case-insensitive;
+a missing/blank ``CallMethod`` yields ``0, 0, 0``.
+
+final_cff cluster stats
+-----------------------
+The final_cff file is NOT merged. Rows with a missing/blank ``cluster`` are
+dropped; the rest are grouped by ``cluster`` and per-cluster values are attached
+to the output by matching the output's ``cluster`` column (contributed by
+filtered_fusions):
+
+- ``cluster_size``   number of final_cff rows in the cluster
+- ``BP1_rao_score``  ``log1p`` of Rao's quadratic entropy over the distinct
+                     ``gene5_breakpoint`` positions in the cluster, weighted by
+                     how often each position occurs
+- ``BP2_rao_score``  same, over ``gene3_breakpoint``
+- ``n_arriba``       number of final_cff rows in the cluster with ``tool`` == arriba
+- ``n_high`` / ``n_med`` / ``n_low``
+                     confidence counts from the arriba_fusions file, for the
+                     cluster's arriba rows matched on
+                     ``gene5::gene3|chr:pos|chr:pos`` (reann_gene5/3_symbol +
+                     gene5/3_chr + gene5/3_breakpoint  <->  #gene1/gene2 +
+                     breakpoint1/breakpoint2). When ``reann_gene5_symbol`` or
+                     ``reann_gene3_symbol`` is NA the breakpoint is intergenic:
+                     that gene is dropped from the key (arriba fills its side
+                     with a distance list like ``SPANXB1(63183),LDOC1(44716)``,
+                     which is ignored) and the row is matched on the surviving
+                     gene symbol(s) plus both breakpoints. Every ``tool`` ==
+                     arriba row in final_cff MUST match an arriba_fusions row --
+                     an unmatched one is a hard error, and so is an intergenic
+                     match that lands on arriba rows of differing confidence --
+                     so n_high + n_med + n_low == n_arriba.
+- ``arriba_conf_score``
+                     ``(3*n_high + 2*n_med + n_low) / max(n_arriba, 1)``
+
+A cluster present in final_cff but with no arriba rows gets 0 for the five
+arriba columns (score 0.0). Output rows whose ``cluster`` is missing, or is a
+cluster not present in final_cff, get ``NaN`` for all eight.
+
+Usage
+-----
+    .venv/bin/python merge_fusion_calls.py \
+        --fusion-annotation fusion_annotation.tsv [fusion_annotation2.tsv] \
+        --filtered-fusions filtered_fusions.tsv \
+        --final-cff final_cff.tsv \
+        --arriba-fusions arriba_fusions.tsv \
+        --output merged.csv [--sep '\\t']
+
+Inputs are read with ``--sep`` (tab by default); the output is a
+comma-separated CSV so ``svm_text.py``'s ``pd.read_csv`` reads it directly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+
+import numpy as np
+import pandas as pd
+from scipy.spatial.distance import pdist, squareform
+
+FUSION_RE = re.compile(r"([A-Za-z0-9_.\-]+::[A-Za-z0-9_.\-]+)")
+
+# Columns each input must contain to build the key.
+FUSION_ANNOTATION_KEY_COLS = ("Chr1", "Pos1", "Chr2", "Pos2")
+FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint")
+FINAL_CFF_KEY_COLS = (
+    "cluster",
+    "tool",
+    "gene5_chr",
+    "gene5_breakpoint",
+    "reann_gene5_symbol",
+    "gene3_chr",
+    "gene3_breakpoint",
+    "reann_gene3_symbol",
+)
+ARRIBA_KEY_COLS = ("#gene1", "gene2", "breakpoint1", "breakpoint2", "confidence")
+CONFIDENCE_LEVELS = ("high", "medium", "low")
+NA_CLUSTER_TOKENS = ("", "na", "nan", "none", "null", ".")
+
+
+# --------------------------------------------------------------------------- #
+# Field normalization
+# --------------------------------------------------------------------------- #
+def _clean(val) -> str:
+    """Stringify, strip, and treat pandas NaN / empty as ``""``."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    return str(val).strip()
+
+
+def normalize_chr(val) -> str | None:
+    """'chr17' / 'Chr17' / '17' -> '17'. Empty -> None."""
+    s = _clean(val)
+    if not s:
+        return None
+    return re.sub(r"^chr", "", s, flags=re.IGNORECASE)
+
+
+def normalize_pos(val) -> str | None:
+    """'8500970' or '8500970.0' -> '8500970'. Non-numeric / empty -> None."""
+    s = _clean(val)
+    if not s:
+        return None
+    try:
+        return str(int(float(s)))
+    except ValueError:
+        return None
+
+
+def extract_gene_pair(fusion, gene1=None, gene2=None) -> str | None:
+    """Pull 'GENE1::GENE2' out of a fusion string (handles 'Fusion {A::B}').
+
+    Falls back to ``gene1::gene2`` when the fusion string has no ``::`` pair.
+    """
+    match = FUSION_RE.search(_clean(fusion))
+    if match:
+        return match.group(1)
+    g1, g2 = _clean(gene1), _clean(gene2)
+    if g1 and g2:
+        return f"{g1}::{g2}"
+    return None
+
+
+def parse_breakpoint(bp) -> tuple[str, str, str, str] | None:
+    """'chr17:8242985:-|chr17:8500970:-' -> ('17', '8242985', '17', '8500970').
+
+    Returns None unless both loci parse to a chr and an integer position.
+    Strand, if present as a third ``:``-field, is ignored.
+    """
+    s = _clean(bp)
+    if "|" not in s:
+        return None
+    left, _, right = s.partition("|")
+    loci = []
+    for part in (left, right):
+        fields = part.split(":")
+        if len(fields) < 2:
+            return None
+        c, p = normalize_chr(fields[0]), normalize_pos(fields[1])
+        if c is None or p is None:
+            return None
+        loci.append((c, p))
+    (c1, p1), (c2, p2) = loci
+    return c1, p1, c2, p2
+
+
+def build_key(gene_pair, chr1, pos1, chr2, pos2) -> str | None:
+    """Assemble the composite key, or None if any component is missing."""
+    c1, p1 = normalize_chr(chr1), normalize_pos(pos1)
+    c2, p2 = normalize_chr(chr2), normalize_pos(pos2)
+    if not gene_pair or None in (c1, p1, c2, p2):
+        return None
+    return f"{gene_pair}|{c1}:{p1}|{c2}:{p2}"
+
+
+def _clean_gene_symbol(val) -> str:
+    """Arriba gene fields can carry ',' lists or '(...)' notes; keep the head symbol."""
+    return re.split(r"[,(]", _clean(val), maxsplit=1)[0].strip()
+
+
+def parse_locus(val) -> tuple[str | None, str | None]:
+    """'3:50175188' or 'chr3:50175188' -> ('3', '50175188')."""
+    s = _clean(val)
+    if ":" not in s:
+        return None, None
+    c, _, p = s.partition(":")
+    return normalize_chr(c), normalize_pos(p)
+
+
+# --------------------------------------------------------------------------- #
+# Loading
+# --------------------------------------------------------------------------- #
+def _read(path: str, sep: str, which: str) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, sep=sep, dtype=str)
+    except FileNotFoundError:
+        raise SystemExit(f"error: {which} file not found: {path}")
+    except Exception as exc:  # noqa: BLE001 - surface parse errors cleanly
+        raise SystemExit(f"error: could not read {which} {path}: {exc}")
+    if df.empty:
+        raise SystemExit(f"error: {which} {path} contains no rows")
+    return df
+
+
+def _require_cols(df: pd.DataFrame, cols, which: str) -> None:
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise SystemExit(
+            f"error: {which} is missing column(s): {', '.join(missing)} "
+            f"(found: {', '.join(map(str, df.columns))})"
+        )
+
+
+def _combine_fusion_annotation(paths: list[str], sep: str) -> pd.DataFrame:
+    """Read one or two fusion_annotation files and stack them row-wise.
+
+    Two files are allowed when they carry the same set of column names (order
+    doesn't matter -- the trailing file is reindexed to the first's order before
+    concat). Rows are kept as-is: overlapping fusions are not deduplicated.
+    """
+    frames = [_read(p, sep, "fusion_annotation") for p in paths]
+    first = frames[0]
+    for i, path in enumerate(paths[1:], start=1):
+        df = frames[i]
+        extra = [c for c in df.columns if c not in first.columns]
+        missing = [c for c in first.columns if c not in df.columns]
+        if extra or missing:
+            raise SystemExit(
+                f"error: fusion_annotation files have mismatched columns: "
+                f"{path} adds {extra or '[]'} and is missing {missing or '[]'} "
+                f"relative to {paths[0]}"
+            )
+        frames[i] = df[first.columns]
+    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else first
+
+
+def load_fusion_annotation(paths: list[str], sep: str) -> pd.DataFrame:
+    df = _combine_fusion_annotation(paths, sep)
+    _require_cols(df, FUSION_ANNOTATION_KEY_COLS, "fusion_annotation")
+    if "Fusion" not in df.columns and not {"Gene1", "Gene2"} <= set(df.columns):
+        raise SystemExit(
+            "error: fusion_annotation needs a 'Fusion' column or both 'Gene1' and 'Gene2'"
+        )
+
+    fusion = df["Fusion"] if "Fusion" in df.columns else pd.Series([None] * len(df))
+    gene1 = df["Gene1"] if "Gene1" in df.columns else pd.Series([None] * len(df))
+    gene2 = df["Gene2"] if "Gene2" in df.columns else pd.Series([None] * len(df))
+    keys = [
+        build_key(extract_gene_pair(f, g1, g2), c1, p1, c2, p2)
+        for f, g1, g2, c1, p1, c2, p2 in zip(
+            fusion, gene1, gene2, df["Chr1"], df["Pos1"], df["Chr2"], df["Pos2"]
+        )
+    ]
+
+    df = df.rename(columns={"TF": "TF_f1"})
+    df.insert(0, "fusion_key", keys)
+    return df
+
+
+def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
+    df = _read(path, sep, "filtered_fusions")
+    _require_cols(df, FILTERED_FUSIONS_KEY_COLS, "filtered_fusions")
+
+    keys = []
+    for fus, bp in zip(df["fusion"], df["breakpoint"]):
+        parsed = parse_breakpoint(bp)
+        if parsed is None:
+            keys.append(None)
+            continue
+        c1, p1, c2, p2 = parsed
+        keys.append(build_key(extract_gene_pair(fus), c1, p1, c2, p2))
+
+    df = df.rename(columns={"TF": "TF_f2"})
+    df.insert(0, "fusion_key", keys)
+    return df
+
+
+# --------------------------------------------------------------------------- #
+# final_cff cluster stats
+# --------------------------------------------------------------------------- #
+def rao_qe(pos, counts):
+    """Rao's quadratic entropy over 1-D positions weighted by occurrence counts."""
+    pos = np.asarray(pos, dtype=float)
+    counts = np.asarray(counts, dtype=float)
+    if len(pos) == 1:
+        return 0.0
+    p = counts / counts.sum()
+    d = squareform(pdist(pos.reshape(-1, 1)))
+    return np.sum(np.outer(p, p) * d)
+
+
+def _side_rao_score(breakpoints: pd.Series) -> float:
+    """log1p(rao_qe) for one fusion side; NaN if no usable numeric breakpoints."""
+    vals = pd.to_numeric(breakpoints, errors="coerce").dropna()
+    if vals.empty:
+        return float("nan")
+    freq = vals.value_counts()
+    return float(np.log1p(rao_qe(freq.index.to_numpy(), freq.to_numpy())))
+
+
+def load_final_cff(path: str, sep: str) -> pd.DataFrame:
+    df = _read(path, sep, "final_cff")
+    _require_cols(df, FINAL_CFF_KEY_COLS, "final_cff")
+    cl = df["cluster"].astype("string").str.strip()
+    keep = cl.notna() & ~cl.str.lower().isin(NA_CLUSTER_TOKENS)
+    kept = df[keep.to_numpy()].copy()
+    kept.attrs["n_dropped_na_cluster"] = len(df) - len(kept)
+    if kept.empty:
+        raise SystemExit(f"error: final_cff {path} has no rows with a cluster")
+    return kept
+
+
+def load_arriba_fusions(path: str, sep: str) -> pd.DataFrame:
+    """arriba output -> DataFrame of (arriba_key, confidence), deduped on the key.
+
+    Alongside the full ``arriba_key`` (``G5::G3|chr:pos|chr:pos``) three partial
+    keys are built with ``*`` standing in for one dropped gene, so a final_cff
+    row whose ``reann_gene5/3_symbol`` is NA (intergenic breakpoint) can still be
+    matched on the surviving gene plus both loci:
+
+    - ``arriba_key_g5``      ``G5::*|chr:pos|chr:pos``  (3' gene dropped)
+    - ``arriba_key_g3``      ``*::G3|chr:pos|chr:pos``  (5' gene dropped)
+    - ``arriba_key_nogene``  ``*::*|chr:pos|chr:pos``   (both breakpoints only)
+    """
+    df = _read(path, sep, "arriba_fusions")
+    _require_cols(df, ARRIBA_KEY_COLS, "arriba_fusions")
+
+    keys, keys_g5, keys_g3, keys_nogene, confs = [], [], [], [], []
+    for g1, g2, bp1, bp2, conf in zip(
+        df["#gene1"], df["gene2"], df["breakpoint1"], df["breakpoint2"], df["confidence"]
+    ):
+        c1, p1 = parse_locus(bp1)
+        c2, p2 = parse_locus(bp2)
+        s1, s2 = _clean_gene_symbol(g1), _clean_gene_symbol(g2)
+        pair = f"{s1}::{s2}" if s1 and s2 else None
+        keys.append(build_key(pair, c1, p1, c2, p2))
+        keys_g5.append(build_key(f"{s1}::*" if s1 else None, c1, p1, c2, p2))
+        keys_g3.append(build_key(f"*::{s2}" if s2 else None, c1, p1, c2, p2))
+        keys_nogene.append(build_key("*::*", c1, p1, c2, p2))
+        c = _clean(conf).lower()
+        confs.append(c if c in CONFIDENCE_LEVELS else None)
+
+    out = pd.DataFrame(
+        {
+            "arriba_key": keys,
+            "arriba_key_g5": keys_g5,
+            "arriba_key_g3": keys_g3,
+            "arriba_key_nogene": keys_nogene,
+            "confidence": confs,
+        }
+    )
+    return out.dropna(subset=["arriba_key"]).drop_duplicates("arriba_key", keep="first")
+
+
+def _conf_options(df_arriba: pd.DataFrame, col: str) -> dict[str, set]:
+    """Map a partial arriba key -> set of distinct confidence levels seen for it.
+
+    A key that resolves to more than one distinct level is ambiguous and makes
+    the intergenic fallback in :func:`cluster_stats` a hard error.
+    """
+    out: dict[str, set] = {}
+    for key, conf in zip(df_arriba[col], df_arriba["confidence"]):
+        if key is None:
+            continue
+        out.setdefault(key, set()).add(conf)
+    return out
+
+
+def _match_arriba_conf(
+    g5, g3, c5, p5, c3, p3, conf_by_key, opts_g5, opts_g3, opts_nogene
+) -> tuple[str | None, str]:
+    """Resolve one final_cff ``tool==arriba`` row to an arriba confidence level.
+
+    Returns ``(confidence, status)`` with status ``"ok"``, ``"unmatched"``, or
+    ``"ambiguous"``. When ``reann_gene5_symbol`` / ``reann_gene3_symbol`` is NA
+    the gene on that side is intergenic and dropped from the match: the row is
+    matched on the surviving gene symbol(s) plus both ``chr:pos`` loci. An
+    intergenic match that lands on several arriba rows with differing confidence
+    is ``"ambiguous"``.
+    """
+    s5, s3 = _clean_gene_symbol(g5), _clean_gene_symbol(g3)
+    if s5 and s3:
+        key = build_key(f"{s5}::{s3}", c5, p5, c3, p3)
+        conf = conf_by_key.get(key) if key is not None else None
+        return (conf, "ok" if conf is not None else "unmatched")
+
+    if s5:
+        key = build_key(f"{s5}::*", c5, p5, c3, p3)
+        cand = opts_g5.get(key) if key is not None else None
+    elif s3:
+        key = build_key(f"*::{s3}", c5, p5, c3, p3)
+        cand = opts_g3.get(key) if key is not None else None
+    else:
+        key = build_key("*::*", c5, p5, c3, p3)
+        cand = opts_nogene.get(key) if key is not None else None
+
+    real = {c for c in cand if c is not None} if cand else set()
+    if len(real) > 1:
+        return (None, "ambiguous")
+    if not real:
+        return (None, "unmatched")
+    return (next(iter(real)), "ok")
+
+
+def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame:
+    """Per-cluster size, Rao scores, and arriba confidence stats, indexed by ``cluster``."""
+    conf_by_key = df_arriba.set_index("arriba_key")["confidence"]
+
+    opts_g5 = _conf_options(df_arriba, "arriba_key_g5")
+    opts_g3 = _conf_options(df_arriba, "arriba_key_g3")
+    opts_nogene = _conf_options(df_arriba, "arriba_key_nogene")
+
+    is_arriba = df_cff["tool"].astype("string").str.strip().str.lower() == "arriba"
+    cff_arr = df_cff[is_arriba.to_numpy()].copy()
+    resolved = [
+        _match_arriba_conf(
+            g5, g3, c5, p5, c3, p3, conf_by_key, opts_g5, opts_g3, opts_nogene
+        )
+        for g5, g3, c5, p5, c3, p3 in zip(
+            cff_arr["reann_gene5_symbol"],
+            cff_arr["reann_gene3_symbol"],
+            cff_arr["gene5_chr"],
+            cff_arr["gene5_breakpoint"],
+            cff_arr["gene3_chr"],
+            cff_arr["gene3_breakpoint"],
+        )
+    ]
+    cff_arr["_conf"] = [c for c, _ in resolved]
+    cff_arr["_status"] = [s for _, s in resolved]
+
+    _preview_cols = [
+        "cluster", "reann_gene5_symbol", "gene5_chr", "gene5_breakpoint",
+        "reann_gene3_symbol", "gene3_chr", "gene3_breakpoint",
+    ]
+    ambiguous = cff_arr[cff_arr["_status"] == "ambiguous"]
+    if not ambiguous.empty:
+        preview = ambiguous[_preview_cols].head(10)
+        raise SystemExit(
+            f"error: {len(ambiguous)} final_cff row(s) with tool==arriba and an "
+            f"intergenic gene match multiple arriba_fusions rows with differing "
+            f"confidence (matched on breakpoint + the non-intergenic gene). "
+            f"first ambiguous:\n{preview.to_string(index=False)}"
+        )
+
+    unmatched = cff_arr[cff_arr["_status"] == "unmatched"]
+    if not unmatched.empty:
+        preview = unmatched[_preview_cols].head(10)
+        raise SystemExit(
+            f"error: {len(unmatched)} final_cff row(s) with tool==arriba have no matching "
+            f"arriba_fusions row (matched on gene pair + both chr:pos; an intergenic "
+            f"side is matched on breakpoint + the other gene). "
+            f"first unmatched:\n{preview.to_string(index=False)}"
+        )
+
+    rows = []
+    for cluster, grp in df_cff.groupby("cluster", dropna=True):
+        arr = cff_arr[cff_arr["cluster"] == cluster]
+        cvc = arr["_conf"].value_counts()
+        n_arriba = len(arr)
+        n_high, n_med, n_low = (int(cvc.get(k, 0)) for k in CONFIDENCE_LEVELS)
+        rows.append(
+            {
+                "cluster": cluster,
+                "cluster_size": len(grp),
+                "BP1_rao_score": _side_rao_score(grp["gene5_breakpoint"]),
+                "BP2_rao_score": _side_rao_score(grp["gene3_breakpoint"]),
+                "n_arriba": n_arriba,
+                "n_high": n_high,
+                "n_med": n_med,
+                "n_low": n_low,
+                "arriba_conf_score": (3 * n_high + 2 * n_med + n_low) / max(n_arriba, 1),
+            }
+        )
+    cols = [
+        "cluster", "cluster_size", "BP1_rao_score", "BP2_rao_score",
+        "n_arriba", "n_high", "n_med", "n_low", "arriba_conf_score",
+    ]
+    return pd.DataFrame(rows, columns=cols).set_index("cluster")
+
+
+# --------------------------------------------------------------------------- #
+# Merge
+# --------------------------------------------------------------------------- #
+def merge(df_ann: pd.DataFrame, df_filt: pd.DataFrame) -> pd.DataFrame:
+    ann_cols = [c for c in df_ann.columns if c != "fusion_key"]
+    filt_cols = [c for c in df_filt.columns if c != "fusion_key"]
+
+    merged = df_ann.merge(df_filt, on="fusion_key", how="left", suffixes=("_f1", "_f2"))
+    return merged[["fusion_key"] + ann_cols + filt_cols]
+
+
+def attach_cluster_stats(merged: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
+    """Append the eight per-cluster stat columns by matching ``cluster``."""
+    if "cluster" not in merged.columns:
+        raise SystemExit(
+            "error: merged output has no 'cluster' column to join final_cff stats on "
+            "(expected from filtered_fusions)"
+        )
+    joined = merged.join(stats, on="cluster")
+    for col in ("cluster_size", "n_arriba", "n_high", "n_med", "n_low"):
+        joined[col] = joined[col].astype("Int64")
+    return joined
+
+
+# Letter in CallMethod -> output column name.
+CALL_METHOD_FLAGS = (("A", "Arriba"), ("F", "FusionCatcher"), ("S", "StarFusion"))
+
+
+def add_call_method_flags(merged: pd.DataFrame) -> pd.DataFrame:
+    """Expand ``CallMethod`` into 0/1 ``Arriba`` / ``FusionCatcher`` / ``StarFusion``.
+
+    Case-insensitive letter membership; a missing/blank ``CallMethod`` gives 0 for
+    all three. New columns are appended at the end.
+    """
+    if "CallMethod" not in merged.columns:
+        raise SystemExit(
+            "error: merged output has no 'CallMethod' column to derive caller flags "
+            "from (expected from fusion_annotation)"
+        )
+    codes = merged["CallMethod"].map(lambda v: _clean(v).upper())
+    for letter, col in CALL_METHOD_FLAGS:
+        merged[col] = codes.str.contains(letter, regex=False).astype(int)
+    return merged
+
+
+def summarize(
+    df_ann: pd.DataFrame,
+    df_filt: pd.DataFrame,
+    df_cff: pd.DataFrame,
+    df_arriba: pd.DataFrame,
+    stats: pd.DataFrame,
+    merged: pd.DataFrame,
+) -> str:
+    filt_keys = set(df_filt["fusion_key"].dropna())
+    ann_keys = set(df_ann["fusion_key"].dropna())
+    matched = df_ann["fusion_key"].isin(filt_keys).sum()
+    unused = (~df_filt["fusion_key"].isin(ann_keys)).sum()
+    with_stats = merged["cluster_size"].notna().sum()
+    dropped = df_cff.attrs.get("n_dropped_na_cluster", 0)
+    arriba_calls = int(stats["n_arriba"].sum())
+    return (
+        f"fusion_annotation rows: {len(df_ann)} | matched: {matched} | "
+        f"filtered_fusions rows unused: {unused} | output rows: {len(merged)}\n"
+        f"final_cff: {len(stats)} clusters | rows dropped (no cluster): {dropped} | "
+        f"output rows with cluster stats: {with_stats}\n"
+        f"arriba_fusions rows: {len(df_arriba)} | arriba calls in clusters: {arriba_calls}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Merge fusion_annotation + filtered_fusions and attach final_cff "
+        "per-cluster stats, writing one CSV for svm_text.py."
+    )
+    p.add_argument(
+        "--fusion-annotation",
+        required=True,
+        nargs="+",
+        metavar="FILE",
+        help="one or two fusion_annotation files (all columns kept). Two files "
+        "must share the same column names (any order) and are stacked row-wise; "
+        "overlapping fusions are not deduplicated.",
+    )
+    p.add_argument(
+        "--filtered-fusions",
+        required=True,
+        help="path to the filtered_fusions file (left-joined on fusion_key)",
+    )
+    p.add_argument(
+        "--final-cff",
+        required=True,
+        help="path to the final_cff file (grouped by cluster; not merged)",
+    )
+    p.add_argument(
+        "--arriba-fusions",
+        required=True,
+        help="path to the arriba fusions file (confidence stats per cluster)",
+    )
+    p.add_argument("--output", required=True, help="path to write the merged CSV")
+    p.add_argument(
+        "--sep",
+        default="\t",
+        help=r"field separator for the INPUT files (default: tab). Output is always CSV.",
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+
+    if not 1 <= len(args.fusion_annotation) <= 2:
+        raise SystemExit("error: --fusion-annotation takes one or two files")
+
+    df_ann = load_fusion_annotation(args.fusion_annotation, args.sep)
+    df_filt = load_filtered_fusions(args.filtered_fusions, args.sep)
+    df_cff = load_final_cff(args.final_cff, args.sep)
+    df_arriba = load_arriba_fusions(args.arriba_fusions, args.sep)
+
+    stats = cluster_stats(df_cff, df_arriba)
+    merged = merge(df_ann, df_filt)
+    merged = attach_cluster_stats(merged, stats)
+    merged = add_call_method_flags(merged)
+
+    merged.to_csv(args.output, index=False)
+    print(summarize(df_ann, df_filt, df_cff, df_arriba, stats, merged))
+    print(f"wrote {len(merged)} rows x {merged.shape[1]} cols -> {args.output}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
