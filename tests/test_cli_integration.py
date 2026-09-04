@@ -35,6 +35,7 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     df = pd.read_csv(out_path)
     assert len(df) == 4  # one row per cluster (c1..c4), all matched
     df = df.set_index("cluster")
+    assert "c5" not in df.index.tolist()  # action == "DROP" -> filtered before output
 
     # c1: 3 final_cff rows (incl. a max_split_cnt == -1 sentinel row) + 1 arriba "high" match
     assert df.loc["c1", "n_arriba"] == 1

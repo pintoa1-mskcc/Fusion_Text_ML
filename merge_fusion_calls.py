@@ -123,7 +123,7 @@ from scipy.spatial.distance import pdist, squareform
 FUSION_RE = re.compile(r"([A-Za-z0-9_.\-]+::[A-Za-z0-9_.\-]+)")
 
 # Columns each input must contain to build the key.
-FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint", "tool")
+FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint", "tool", "action")
 FINAL_CFF_KEY_COLS = (
     "cluster",
     "tool",
@@ -253,6 +253,10 @@ def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
     df = _read(path, sep, "filtered_fusions")
     _require_cols(df, FILTERED_FUSIONS_KEY_COLS, "filtered_fusions")
 
+    is_drop = df["action"].astype("string").str.strip().str.lower() == "drop"
+    n_dropped = int(is_drop.sum())
+    df = df[~is_drop.to_numpy()].copy()
+
     keys = []
     for fus, bp in zip(df["fusion"], df["breakpoint"]):
         parsed = parse_breakpoint(bp)
@@ -263,6 +267,7 @@ def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
         keys.append(build_key(extract_gene_pair(fus), c1, p1, c2, p2))
 
     df.insert(0, "fusion_key", keys)
+    df.attrs["n_dropped_action"] = n_dropped
     return df
 
 
@@ -645,9 +650,11 @@ def summarize(
 ) -> str:
     with_stats = output["cluster_size"].notna().sum()
     dropped = df_cff.attrs.get("n_dropped_na_cluster", 0)
+    dropped_action = df_filt.attrs.get("n_dropped_action", 0)
     arriba_calls = int(stats["n_arriba"].sum())
     return (
-        f"filtered_fusions rows: {len(df_filt)} | output rows: {len(output)}\n"
+        f"filtered_fusions rows: {len(df_filt)} (dropped action==drop: {dropped_action}) | "
+        f"output rows: {len(output)}\n"
         f"final_cff: {len(stats)} clusters | rows dropped (no cluster): {dropped} | "
         f"output rows with cluster stats: {with_stats}\n"
         f"arriba_fusions rows: {len(df_arriba)} | arriba calls in clusters: {arriba_calls}"

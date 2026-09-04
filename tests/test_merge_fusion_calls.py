@@ -190,12 +190,26 @@ def test_load_filtered_fusions_requires_tool_column(tmp_path):
 def test_load_filtered_fusions_keeps_tf_column_name(tmp_path):
     path = tmp_path / "filtered_fusions.tsv"
     path.write_text(
-        "fusion\tbreakpoint\ttool\tTF\n"
-        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tFALSE\n"
+        "fusion\tbreakpoint\ttool\taction\tTF\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tNOVEL\tFALSE\n"
     )
     df = load_filtered_fusions(str(path), sep="\t")
     assert "TF" in df.columns
     assert "TF_f2" not in df.columns
+
+
+def test_load_filtered_fusions_drops_action_drop_rows(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text(
+        "fusion\tbreakpoint\ttool\taction\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tNOVEL\n"
+        "GENEC::GENED\tchr3:2000:+|chr4:6000:-\tAF\tDROP\n"
+        "GENEE::GENEF\tchr5:3000:+|chr6:7000:+\tF\t drop \n"
+    )
+    df = load_filtered_fusions(str(path), sep="\t")
+    assert len(df) == 1
+    assert df.iloc[0]["fusion"] == "GENEA::GENEB"
+    assert df.attrs["n_dropped_action"] == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -250,6 +264,7 @@ def test_load_final_cff_requires_max_split_and_span_cnt(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_summarize_reports_filtered_fusions_and_cluster_counts():
     df_filt = pd.DataFrame({"fusion_key": ["k1", "k2"]})
+    df_filt.attrs["n_dropped_action"] = 3
     df_cff = pd.DataFrame({"cluster": ["c1"]})
     df_cff.attrs["n_dropped_na_cluster"] = 1
     df_arriba = pd.DataFrame({"arriba_key": ["a1", "a2", "a3"]})
@@ -259,6 +274,7 @@ def test_summarize_reports_filtered_fusions_and_cluster_counts():
     result = summarize(df_filt, df_cff, df_arriba, stats, output)
 
     assert "filtered_fusions rows: 2" in result
+    assert "dropped action==drop: 3" in result
     assert "output rows: 2" in result
     assert "final_cff: 1 clusters" in result
     assert "rows dropped (no cluster): 1" in result
