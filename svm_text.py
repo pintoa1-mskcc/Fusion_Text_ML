@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Clinical text classification with a TF-IDF + linear SVM pipeline.
+"""Tabular fusion-call classification with a mixed numeric/categorical + linear SVM
+pipeline.
 
 Subcommands
 -----------
-train     Fit a TfidfVectorizer + LinearSVC pipeline on a labelled CSV and save it.
+train     Fit a preprocessing + LinearSVC pipeline on a labelled CSV and save it.
 evaluate  Score a saved model against a labelled CSV.
-predict   Predict labels for new text (from a CSV or a single --text string).
+predict   Predict labels for new rows (from a CSV).
 
-One or more text columns may be given to --text-col as a comma-separated list;
-their values are concatenated per row (space separated) before vectorizing.
+One or more feature columns may be given to --text-col as a comma-separated list.
+Each named column is routed by its own dtype: numeric columns are median-imputed and
+scaled, non-numeric columns are imputed and one-hot encoded -- no column names are
+hardcoded, so this works for any CSV shape (e.g. merge_fusion_calls.py's output).
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ import sys
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer, make_column_selector
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -27,7 +32,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import LinearSVC
 
 
@@ -42,26 +47,23 @@ def parse_text_cols(text_col: str) -> list[str]:
     return cols
 
 
-def combine_text_columns(df: pd.DataFrame, text_cols: list[str]) -> pd.Series:
-    """Concatenate the given columns row-wise into a single text Series."""
+def select_feature_columns(df: pd.DataFrame, text_cols: list[str]) -> pd.DataFrame:
+    """Return the named feature columns as-is (dtype-preserving slice, no combining)."""
     missing = [c for c in text_cols if c not in df.columns]
     if missing:
         raise ValueError(
-            f"text column(s) not found in data: {', '.join(missing)} "
+            f"feature column(s) not found in data: {', '.join(missing)} "
             f"(available: {', '.join(map(str, df.columns))})"
         )
-    filled = df[text_cols].fillna("").astype(str)
-    if len(text_cols) == 1:
-        return filled[text_cols[0]]
-    return filled.agg(" ".join, axis=1)
+    return df[text_cols]
 
 
 def load_dataset(
     path: str,
     text_cols: list[str],
     label_col: str | None = None,
-) -> tuple[pd.Series, pd.Series | None]:
-    """Load a CSV and return (combined_text, labels). labels is None if not requested."""
+) -> tuple[pd.DataFrame, pd.Series | None]:
+    """Load a CSV and return (features, labels). labels is None if not requested."""
     try:
         df = pd.read_csv(path)
     except FileNotFoundError:
@@ -73,7 +75,7 @@ def load_dataset(
         raise SystemExit(f"error: {path} contains no rows")
 
     try:
-        text = combine_text_columns(df, text_cols)
+        features = select_feature_columns(df, text_cols)
     except ValueError as exc:
         raise SystemExit(f"error: {exc}")
 
@@ -86,25 +88,48 @@ def load_dataset(
             )
         labels = df[label_col]
 
-    return text, labels
+    return features, labels
 
 
 # --------------------------------------------------------------------------- #
 # Model
 # --------------------------------------------------------------------------- #
 def build_pipeline(seed: int) -> Pipeline:
-    """TF-IDF features -> linear SVM. LinearSVC scales to sparse high-dim text."""
-    return Pipeline(
+    """Numeric + categorical preprocessing -> linear SVM.
+
+    Columns are routed by dtype (not by name): numeric columns are median-imputed
+    and scaled; everything else is imputed with a "missing" placeholder and one-hot
+    encoded. LinearSVC scales to the resulting sparse, high-dimensional feature space.
+    """
+    numeric = make_column_selector(dtype_include="number")
+    categorical = make_column_selector(dtype_exclude="number")
+    preprocess = ColumnTransformer(
         [
             (
-                "tfidf",
-                TfidfVectorizer(
-                    lowercase=True,
-                    ngram_range=(1, 2),
-                    min_df=2,
-                    sublinear_tf=True,
+                "numeric",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="median")),
+                        ("scale", StandardScaler()),
+                    ]
                 ),
+                numeric,
             ),
+            (
+                "categorical",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="constant", fill_value="missing")),
+                        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                    ]
+                ),
+                categorical,
+            ),
+        ]
+    )
+    return Pipeline(
+        [
+            ("preprocess", preprocess),
             ("svm", LinearSVC(C=1.0, class_weight="balanced", random_state=seed)),
         ]
     )
@@ -153,7 +178,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     y_pred = pipe.predict(X_test)
     labels = sorted(y.unique().tolist(), key=str)
     print(f"trained on {len(X_train)} rows, tested on {len(X_test)} rows")
-    print(f"text columns: {text_cols}")
+    print(f"feature columns: {text_cols}")
     print_metrics(y_test, y_pred, labels)
 
     payload = {
@@ -186,28 +211,20 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
 
     labels = payload.get("labels") or sorted(y.unique().tolist(), key=str)
     print(f"evaluated {len(X)} rows from {args.data}")
-    print(f"text columns: {text_cols}")
+    print(f"feature columns: {text_cols}")
     print_metrics(y, y_pred, labels)
 
 
 def cmd_predict(args: argparse.Namespace) -> None:
-    if not args.data and args.text is None:
-        raise SystemExit("error: predict needs either --data or --text")
-    if args.data and args.text is not None:
-        raise SystemExit("error: pass only one of --data or --text")
+    if not args.data:
+        raise SystemExit("error: predict needs --data")
 
     payload = _load_model(args.model)
     pipe = payload["pipeline"]
 
-    if args.text is not None:
-        X = pd.Series([args.text])
-        source = pd.DataFrame({"text": X})
-    else:
-        text_cols = (
-            parse_text_cols(args.text_col) if args.text_col else payload["text_cols"]
-        )
-        X, _ = load_dataset(args.data, text_cols, None)
-        source = pd.DataFrame({"combined_text": X})
+    text_cols = parse_text_cols(args.text_col) if args.text_col else payload["text_cols"]
+    X, _ = load_dataset(args.data, text_cols, None)
+    source = X.copy()
 
     preds = pipe.predict(X)
     margins = pipe.decision_function(X)
@@ -231,7 +248,7 @@ def cmd_predict(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="TF-IDF + linear SVM text classifier for clinical notes."
+        description="Tabular linear SVM classifier for fusion-call feature data."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -239,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--text-col",
             default=text_col_default,
-            help="text column, or comma-separated list of columns to concatenate "
+            help="feature column, or comma-separated list of feature columns "
             "(default: %(default)s)",
         )
         p.add_argument(
@@ -263,10 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_col_args(p_eval, text_col_default=None)
     p_eval.set_defaults(func=cmd_evaluate)
 
-    p_pred = sub.add_parser("predict", help="predict labels for new text")
+    p_pred = sub.add_parser("predict", help="predict labels for new rows")
     p_pred.add_argument("--model", default="model.joblib", help="(default: %(default)s)")
     p_pred.add_argument("--data", help="CSV of rows to classify")
-    p_pred.add_argument("--text", help="a single text string to classify")
     add_col_args(p_pred, text_col_default=None)
     p_pred.add_argument("--output", help="write predictions to this CSV instead of stdout")
     p_pred.set_defaults(func=cmd_predict)
