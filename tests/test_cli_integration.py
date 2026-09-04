@@ -21,9 +21,6 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     out_path = tmp_path / "test.csv"
     main(
         [
-            "--fusion-annotation",
-            str(FIXTURES / "toy_AllAnnotatedSVs.txt"),
-            str(FIXTURES / "toy_AllAnnotatedSVs.novel.txt"),
             "--filtered-fusions",
             str(FIXTURES / "toy_filtered_fusions.tsv"),
             "--final-cff",
@@ -65,11 +62,11 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     # raw_sum = 1*1 = 1; K = 3 -> 1 / (1 + 3)
     assert df.loc["c4", "arriba_conf_score"] == pytest.approx(0.25)
 
-    # CallMethod flags derived correctly across both fusion_annotation files
+    # tool-derived caller flags
     assert df.loc["c1", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [1, 1, 1]  # AFS
     assert df.loc["c3", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [0, 1, 0]  # F
 
-    # n_callers = len(CallMethod), per output row
+    # n_callers = len(tool), per output row
     assert df.loc["c1", "n_callers"] == 3  # AFS
     assert df.loc["c2", "n_callers"] == 2  # AF
     assert df.loc["c3", "n_callers"] == 1  # F

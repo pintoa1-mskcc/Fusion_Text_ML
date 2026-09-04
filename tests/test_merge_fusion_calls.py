@@ -20,6 +20,7 @@ from merge_fusion_calls import (
     load_final_cff,
     load_filtered_fusions,
     rao_qe,
+    summarize,
 )
 
 FINAL_CFF_HEADER = (
@@ -242,3 +243,25 @@ def test_load_final_cff_requires_max_split_and_span_cnt(tmp_path):
     )
     with pytest.raises(SystemExit, match="max_split_cnt"):
         load_final_cff(path, "\t")
+
+
+# --------------------------------------------------------------------------- #
+# summarize
+# --------------------------------------------------------------------------- #
+def test_summarize_reports_filtered_fusions_and_cluster_counts():
+    df_filt = pd.DataFrame({"fusion_key": ["k1", "k2"]})
+    df_cff = pd.DataFrame({"cluster": ["c1"]})
+    df_cff.attrs["n_dropped_na_cluster"] = 1
+    df_arriba = pd.DataFrame({"arriba_key": ["a1", "a2", "a3"]})
+    stats = pd.DataFrame({"n_arriba": [2]}, index=pd.Index(["c1"], name="cluster"))
+    output = pd.DataFrame({"cluster_size": [5, None]})
+
+    result = summarize(df_filt, df_cff, df_arriba, stats, output)
+
+    assert "filtered_fusions rows: 2" in result
+    assert "output rows: 2" in result
+    assert "final_cff: 1 clusters" in result
+    assert "rows dropped (no cluster): 1" in result
+    assert "output rows with cluster stats: 1" in result
+    assert "arriba_fusions rows: 3" in result
+    assert "arriba calls in clusters: 2" in result
