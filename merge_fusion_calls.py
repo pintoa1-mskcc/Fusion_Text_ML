@@ -254,8 +254,9 @@ def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
     _require_cols(df, FILTERED_FUSIONS_KEY_COLS, "filtered_fusions")
 
     is_drop = df["action"].astype("string").str.strip().str.lower() == "drop"
+    is_drop = is_drop.to_numpy(dtype=bool, na_value=False)
     n_dropped = int(is_drop.sum())
-    df = df[~is_drop.to_numpy()].copy()
+    df = df[~is_drop].copy()
 
     keys = []
     for fus, bp in zip(df["fusion"], df["breakpoint"]):

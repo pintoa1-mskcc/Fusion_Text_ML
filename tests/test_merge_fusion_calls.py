@@ -212,6 +212,18 @@ def test_load_filtered_fusions_drops_action_drop_rows(tmp_path):
     assert df.attrs["n_dropped_action"] == 2
 
 
+def test_load_filtered_fusions_missing_action_is_not_dropped(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text(
+        "fusion\tbreakpoint\ttool\taction\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tNOVEL\n"
+        "GENEC::GENED\tchr3:2000:+|chr4:6000:-\tAF\t\n"
+    )
+    df = load_filtered_fusions(str(path), sep="\t")
+    assert len(df) == 2
+    assert df.attrs["n_dropped_action"] == 0
+
+
 # --------------------------------------------------------------------------- #
 # somatic_flags one-hot encoding
 # --------------------------------------------------------------------------- #
