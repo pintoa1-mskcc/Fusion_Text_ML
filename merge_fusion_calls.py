@@ -659,13 +659,14 @@ def summarize(
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Merge fusion_annotation + filtered_fusions and attach final_cff "
-        "per-cluster stats, writing one CSV for svm_text.py."
+        description="Merge filtered_fusions with final_cff per-cluster stats and "
+        "arriba_fusions confidence stats, writing one CSV for svm_text.py."
     )
     p.add_argument(
         "--filtered-fusions",
         required=True,
-        help="path to the filtered_fusions file (left-joined on fusion_key)",
+        help="path to the filtered_fusions file (base table for the output; "
+        "contributes fusion_key, tool, TF, somatic_flags)",
     )
     p.add_argument(
         "--final-cff",
