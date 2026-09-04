@@ -27,7 +27,7 @@ columns. The key is written to the output so downstream consumers can derive
 the same string.
 
 tool caller flags
-------------------
+-----------------
 ``tool`` (from filtered_fusions) is a letter set naming the callers that made
 each fusion call -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
 three 0/1 columns appended at the end of the output: ``Arriba`` (letter ``A``),
