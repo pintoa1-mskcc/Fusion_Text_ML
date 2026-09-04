@@ -30,7 +30,7 @@ from sklearn.metrics import (
     confusion_matrix,
     precision_recall_fscore_support,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import LinearSVC
@@ -164,22 +164,45 @@ def cmd_train(args: argparse.Namespace) -> None:
             f"in column {args.label_col!r}"
         )
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=args.test_size,
-        random_state=args.seed,
-        stratify=y,
-    )
+    class_counts = y.value_counts()
+    min_class_count = class_counts.min()
+    if min_class_count < args.cv_folds:
+        raise SystemExit(
+            f"error: need at least {args.cv_folds} rows in the smallest class for "
+            f"{args.cv_folds}-fold CV, found {min_class_count} in class "
+            f"{class_counts.idxmin()!r}"
+        )
+
+    labels = sorted(y.unique().tolist(), key=str)
+    skf = StratifiedKFold(n_splits=args.cv_folds, shuffle=True, random_state=args.seed)
+
+    oof_preds = np.empty(len(y), dtype=object)
+    fold_precisions, fold_recalls, fold_f1s = [], [], []
+    for train_idx, test_idx in skf.split(X, y):
+        fold_pipe = build_pipeline(args.seed)
+        fold_pipe.fit(X.iloc[train_idx], y.iloc[train_idx])
+        fold_pred = fold_pipe.predict(X.iloc[test_idx])
+        oof_preds[test_idx] = fold_pred
+        p, r, f1, _ = precision_recall_fscore_support(
+            y.iloc[test_idx], fold_pred, average="macro", zero_division=0
+        )
+        fold_precisions.append(p)
+        fold_recalls.append(r)
+        fold_f1s.append(f1)
+
+    print(f"{args.cv_folds}-fold stratified CV on {len(X)} rows")
+    print(f"feature columns: {text_cols}")
+    print("\ncross-validation fold stability (mean ± std)")
+    print(f"macro precision     {np.mean(fold_precisions):.4f} ± {np.std(fold_precisions):.4f}")
+    print(f"macro recall        {np.mean(fold_recalls):.4f} ± {np.std(fold_recalls):.4f}")
+    print(f"macro f1            {np.mean(fold_f1s):.4f} ± {np.std(fold_f1s):.4f}")
+
+    print("\npooled out-of-fold metrics (every row predicted exactly once)")
+    print_metrics(y, oof_preds, labels)
 
     pipe = build_pipeline(args.seed)
-    pipe.fit(X_train, y_train)
-
-    y_pred = pipe.predict(X_test)
-    labels = sorted(y.unique().tolist(), key=str)
-    print(f"trained on {len(X_train)} rows, tested on {len(X_test)} rows")
-    print(f"feature columns: {text_cols}")
-    print_metrics(y_test, y_pred, labels)
+    pipe.fit(X, y)
+    print(f"\ntrained final model on {len(X)} rows using {args.cv_folds}-fold CV")
 
     payload = {
         "pipeline": pipe,
@@ -270,7 +293,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--data", required=True, help="path to a labelled CSV")
     add_col_args(p_train, text_col_default="text")
     p_train.add_argument("--model-out", default="model.joblib", help="(default: %(default)s)")
-    p_train.add_argument("--test-size", type=float, default=0.2, help="(default: %(default)s)")
+    p_train.add_argument(
+        "--cv-folds",
+        type=int,
+        default=5,
+        help="stratified k-fold CV splits for the reported metrics (default: %(default)s)",
+    )
     p_train.add_argument("--seed", type=int, default=42, help="(default: %(default)s)")
     p_train.set_defaults(func=cmd_train, label_col_fallback="label")
 

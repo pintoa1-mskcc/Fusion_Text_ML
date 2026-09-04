@@ -8,6 +8,7 @@ hardcoded), and predict's --text flag is gone (--data is required).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import joblib
@@ -90,10 +91,63 @@ def _train_toy_model(tmp_path):
             "--text-col", "score,tool",
             "--label-col", "label",
             "--model-out", str(model_path),
-            "--test-size", "0.34",
+            "--cv-folds", "3",
         ]
     )
     return model_path
+
+
+def test_train_test_size_flag_replaced_by_cv_folds():
+    train_parser = next(
+        action.choices["train"]
+        for action in svm_text.build_parser()._subparsers._group_actions
+        if action.dest == "command"
+    )
+    assert not any(action.dest == "test_size" for action in train_parser._actions)
+    assert any(action.dest == "cv_folds" for action in train_parser._actions)
+
+
+def test_train_errors_when_smallest_class_below_cv_folds(tmp_path):
+    data = pd.DataFrame(
+        {
+            "score": [1.0, 2.0, 3.0],
+            "tool": ["arriba", "starfusion", "arriba"],
+            "label": ["pass", "drop", "pass"],  # 'drop' has only 1 row
+        }
+    )
+    data_path = tmp_path / "train.csv"
+    data.to_csv(data_path, index=False)
+    model_path = tmp_path / "model.joblib"
+    with pytest.raises(SystemExit, match="error: need at least 5 rows"):
+        svm_text.main(
+            [
+                "train",
+                "--data", str(data_path),
+                "--text-col", "score,tool",
+                "--label-col", "label",
+                "--model-out", str(model_path),
+                "--cv-folds", "5",
+            ]
+        )
+
+
+def test_train_fits_final_model_on_all_rows(tmp_path, capsys):
+    model_path = _train_toy_model(tmp_path)
+    captured = capsys.readouterr()
+    match = re.search(r"trained final model on (\d+) rows", captured.out)
+    assert match is not None
+    assert int(match.group(1)) == 6  # full toy dataset, no rows held back
+    assert model_path.exists()
+
+
+def test_train_reports_cv_fold_stability(tmp_path, capsys):
+    _train_toy_model(tmp_path)
+    captured = capsys.readouterr()
+    match = re.search(r"macro f1\s+([0-9.]+) . ([0-9.]+)", captured.out)
+    assert match is not None
+    mean_f1, std_f1 = float(match.group(1)), float(match.group(2))
+    assert 0.0 <= mean_f1 <= 1.0
+    assert std_f1 >= 0.0
 
 
 def test_predict_requires_data(tmp_path):
@@ -164,7 +218,7 @@ def test_train_on_merge_fusion_calls_output(tmp_path):
             "--text-col", feature_cols,
             "--label-col", "label",
             "--model-out", str(model_path),
-            "--test-size", "0.5",
+            "--cv-folds", "2",
         ]
     )
 

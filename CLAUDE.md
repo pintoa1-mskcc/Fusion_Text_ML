@@ -27,7 +27,7 @@ Recreate it if missing:
 ## Commands
 
 ```bash
-# train: fits pipeline on a stratified split, prints test metrics, dumps model.joblib
+# train: stratified k-fold CV for stable metrics, fits final pipeline on all rows, dumps model.joblib
 # --text-col names the feature columns from merge_fusion_calls.py's output (comma-separated);
 # --label-col is added by hand after the merge (see merge_fusion_calls.py's own doc)
 .venv/bin/python svm_text.py train --data merged.csv \
