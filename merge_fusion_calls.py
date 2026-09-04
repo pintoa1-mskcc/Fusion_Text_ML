@@ -124,7 +124,7 @@ FUSION_RE = re.compile(r"([A-Za-z0-9_.\-]+::[A-Za-z0-9_.\-]+)")
 
 # Columns each input must contain to build the key.
 FUSION_ANNOTATION_KEY_COLS = ("Chr1", "Pos1", "Chr2", "Pos2")
-FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint")
+FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint", "tool")
 FINAL_CFF_KEY_COLS = (
     "cluster",
     "tool",
@@ -632,23 +632,22 @@ def attach_cluster_stats(merged: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFr
 CALL_METHOD_FLAGS = (("A", "Arriba"), ("F", "FusionCatcher"), ("S", "StarFusion"))
 
 
-def add_call_method_flags(merged: pd.DataFrame) -> pd.DataFrame:
-    """Expand ``CallMethod`` into 0/1 ``Arriba`` / ``FusionCatcher`` / ``StarFusion``,
-    plus ``n_callers`` (its character count -- each letter is one caller).
+def add_call_method_flags(base: pd.DataFrame) -> pd.DataFrame:
+    """Expand ``tool`` (filtered_fusions) into 0/1 ``Arriba`` / ``FusionCatcher`` /
+    ``StarFusion``, plus ``n_callers`` (its character count -- each letter is one caller).
 
-    Case-insensitive letter membership; a missing/blank ``CallMethod`` gives 0 for
-    all three flags and ``n_callers``. New columns are appended at the end.
+    Case-insensitive letter membership; a missing/blank ``tool`` value gives 0 for
+    all three flags and ``n_callers`` for that row. New columns are appended at the end.
+
+    Note: this is filtered_fusions' ``tool`` column (a letter-set naming every caller
+    for this fusion call, e.g. ``"AFS"``) -- not to be confused with final_cff's ``tool``
+    column, which names a single caller per final_cff row.
     """
-    if "CallMethod" not in merged.columns:
-        raise SystemExit(
-            "error: merged output has no 'CallMethod' column to derive caller flags "
-            "from (expected from fusion_annotation)"
-        )
-    codes = merged["CallMethod"].map(lambda v: _clean(v).upper())
+    codes = base["tool"].map(lambda v: _clean(v).upper())
     for letter, col in CALL_METHOD_FLAGS:
-        merged[col] = codes.str.contains(letter, regex=False).astype(int)
-    merged["n_callers"] = codes.str.len()
-    return merged
+        base[col] = codes.str.contains(letter, regex=False).astype(int)
+    base["n_callers"] = codes.str.len()
+    return base
 
 
 # Known somatic_flags database names -> their own 0/1 output column, in this order.

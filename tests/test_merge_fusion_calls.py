@@ -18,6 +18,7 @@ from merge_fusion_calls import (
     cluster_stats,
     load_arriba_fusions,
     load_final_cff,
+    load_filtered_fusions,
     rao_qe,
 )
 
@@ -173,9 +174,16 @@ def test_cluster_stats_cv_reads_is_zero_for_a_single_row_cluster(tmp_path):
 # n_callers (add_call_method_flags)
 # --------------------------------------------------------------------------- #
 def test_add_call_method_flags_adds_n_callers():
-    merged = pd.DataFrame({"CallMethod": ["AFS", "AF", "F", "", None]})
-    out = add_call_method_flags(merged)
+    base = pd.DataFrame({"tool": ["AFS", "AF", "F", "", None]})
+    out = add_call_method_flags(base)
     assert out["n_callers"].tolist() == [3, 2, 1, 0, 0]
+
+
+def test_load_filtered_fusions_requires_tool_column(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text("fusion\tbreakpoint\nGENEA::GENEB\tchr1:1000:+|chr2:5000:-\n")
+    with pytest.raises(SystemExit, match=r"missing column\(s\): tool"):
+        load_filtered_fusions(str(path), sep="\t")
 
 
 # --------------------------------------------------------------------------- #
