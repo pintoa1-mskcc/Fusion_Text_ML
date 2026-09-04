@@ -1,6 +1,6 @@
 """End-to-end test of `merge_fusion_calls.py main()` against toy fixtures modeled on the
-real 4-file input shape (see tests/fixtures/) -- fake gene names/positions, real column
-structure. Exercises: two-file --fusion-annotation stacking, the reads/callers rao-score
+real 3-file input shape (see tests/fixtures/) -- fake gene names/positions, real column
+structure. Exercises: the action=="drop" row filter, the reads/callers rao-score
 weightings together with the pre-existing occurrence weighting, a cluster with no arriba
 rows (0-default branch), and an intergenic arriba match (gene5 side dropped from the key).
 """
@@ -33,7 +33,7 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     )
 
     df = pd.read_csv(out_path)
-    assert len(df) == 4  # one row per cluster (c1..c4), all matched
+    assert len(df) == 4  # one row per surviving filtered_fusions row (c1..c4)
     df = df.set_index("cluster")
     assert "c5" not in df.index.tolist()  # action == "DROP" -> filtered before output
 

@@ -571,7 +571,7 @@ def attach_cluster_stats(base: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFram
     return joined
 
 
-# Letter in CallMethod -> output column name.
+# Letter in filtered_fusions' tool column -> output column name.
 CALL_METHOD_FLAGS = (("A", "Arriba"), ("F", "FusionCatcher"), ("S", "StarFusion"))
 
 
