@@ -1,0 +1,128 @@
+"""Tests for the rao-score weighting variants in merge_fusion_calls.py."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from merge_fusion_calls import (
+    _compute_reads,
+    _side_rao_score,
+    _side_rao_score_callers,
+    _side_rao_score_reads,
+    cluster_stats,
+    load_arriba_fusions,
+    load_final_cff,
+    rao_qe,
+)
+
+FINAL_CFF_HEADER = (
+    "cluster\ttool\tgene5_chr\tgene5_breakpoint\treann_gene5_symbol\t"
+    "gene3_chr\tgene3_breakpoint\treann_gene3_symbol\tmax_split_cnt\tmax_span_cnt\n"
+)
+
+
+def _write(path, text: str) -> str:
+    path.write_text(text)
+    return str(path)
+
+
+# --------------------------------------------------------------------------- #
+# _compute_reads
+# --------------------------------------------------------------------------- #
+def test_compute_reads_sums_split_and_span():
+    reads = _compute_reads(pd.Series([10, 3]), pd.Series([5, 2]))
+    assert reads.tolist() == [15, 5]
+
+
+def test_compute_reads_sentinel_uses_span_only():
+    # max_split_cnt == -1 -> reads is max_span_cnt alone, not split + span
+    reads = _compute_reads(pd.Series([10, -1]), pd.Series([5, 8]))
+    assert reads.tolist() == [15, 8]
+
+
+def test_compute_reads_non_numeric_is_nan():
+    assert _compute_reads(pd.Series(["x"]), pd.Series([5])).isna().all()
+
+
+# --------------------------------------------------------------------------- #
+# _side_rao_score_reads / _side_rao_score_callers
+# --------------------------------------------------------------------------- #
+def test_side_rao_score_reads_collapses_duplicate_positions_by_summing_reads():
+    breakpoints = pd.Series([1000, 1000, 1002])
+    reads = pd.Series([15, 8, 5])
+    got = _side_rao_score_reads(breakpoints, reads)
+    expected = float(np.log1p(rao_qe(np.array([1000, 1002]), np.array([23, 5]))))
+    assert got == pytest.approx(expected)
+
+
+def test_side_rao_score_reads_empty_is_nan():
+    got = _side_rao_score_reads(pd.Series([], dtype=float), pd.Series([], dtype=float))
+    assert np.isnan(got)
+
+
+def test_side_rao_score_callers_counts_distinct_callers_not_occurrences():
+    # 3 rows at pos 1000 but only 2 distinct callers there; 1 row (1 caller) at pos 1002
+    breakpoints = pd.Series([1000, 1000, 1000, 1002])
+    callers = pd.Series(["starfusion", "starfusion", "fusioncatcher", "arriba"])
+
+    got = _side_rao_score_callers(breakpoints, callers)
+    expected = float(np.log1p(rao_qe(np.array([1000, 1002]), np.array([2, 1]))))
+    assert got == pytest.approx(expected)
+
+    # differs from occurrence-weighting (3 vs 1) over the same rows
+    occurrence = _side_rao_score(breakpoints)
+    assert got != pytest.approx(occurrence)
+
+
+def test_side_rao_score_callers_empty_is_nan():
+    got = _side_rao_score_callers(pd.Series([], dtype=float), pd.Series([], dtype=object))
+    assert np.isnan(got)
+
+
+# --------------------------------------------------------------------------- #
+# cluster_stats integration (real load_final_cff / load_arriba_fusions path)
+# --------------------------------------------------------------------------- #
+def test_cluster_stats_reads_and_callers_columns(tmp_path):
+    cff_path = _write(
+        tmp_path / "final_cff.tsv",
+        FINAL_CFF_HEADER
+        + "1\tstarfusion\t1\t1000\tGENEA\t2\t5000\tGENEB\t10\t5\n"
+        + "1\tfusioncatcher\t1\t1000\tGENEA\t2\t5000\tGENEB\t-1\t8\n"
+        + "1\tarriba\t1\t1002\tGENEA\t2\t5001\tGENEB\t3\t2\n",
+    )
+    arriba_path = _write(
+        tmp_path / "arriba_fusions.tsv",
+        "#gene1\tgene2\tbreakpoint1\tbreakpoint2\tconfidence\n"
+        "GENEA\tGENEB\t1:1002\t2:5001\thigh\n",
+    )
+
+    df_cff = load_final_cff(cff_path, "\t")
+    df_arriba = load_arriba_fusions(arriba_path, "\t")
+    stats = cluster_stats(df_cff, df_arriba)
+
+    row = stats.loc["1"]
+
+    # reads per row: [10+5, 8 (split=-1 sentinel -> span only), 3+2] = [15, 8, 5]
+    # at gene5_breakpoint positions [1000, 1000, 1002] -> grouped {1000: 23, 1002: 5}
+    expected_reads = float(np.log1p(rao_qe(np.array([1000, 1002]), np.array([23, 5]))))
+    assert row["BP1_rao_score_reads"] == pytest.approx(expected_reads)
+
+    # gene5_breakpoint 1000 has 2 distinct tools (starfusion, fusioncatcher); 1002 has 1 (arriba)
+    expected_callers = float(np.log1p(rao_qe(np.array([1000, 1002]), np.array([2, 1]))))
+    assert row["BP1_rao_score_callers"] == pytest.approx(expected_callers)
+
+    # the reads-weighted score is genuinely different from the pre-existing occurrence score
+    assert row["BP1_rao_score"] != pytest.approx(row["BP1_rao_score_reads"])
+
+
+def test_load_final_cff_requires_max_split_and_span_cnt(tmp_path):
+    path = _write(
+        tmp_path / "final_cff_missing_cols.tsv",
+        "cluster\ttool\tgene5_chr\tgene5_breakpoint\treann_gene5_symbol\t"
+        "gene3_chr\tgene3_breakpoint\treann_gene3_symbol\n"
+        "1\tstarfusion\t1\t1000\tGENEA\t2\t5000\tGENEB\n",
+    )
+    with pytest.raises(SystemExit, match="max_split_cnt"):
+        load_final_cff(path, "\t")

@@ -38,9 +38,16 @@ Recreate it if missing:
 .venv/bin/python svm_text.py predict --model model.joblib --data rows.csv --output preds.csv
 ```
 
-There is no test suite. `sample_data.csv` (120 synthetic rows: `chief_complaint`, `hpi`, `label`)
-is the smoke-test fixture — running the three commands above end-to-end is the verification loop.
-Syntax check: `.venv/bin/python -m py_compile svm_text.py`.
+Unit tests live in `tests/` (pytest, added 2026-09-04) — run with `.venv/bin/python -m pytest`.
+Follow TDD (`superpowers:test-driven-development`) for new work in this repo: write a failing
+test under `tests/` before implementing. `sample_data.csv` (120 synthetic rows:
+`chief_complaint`, `hpi`, `label`) remains the smoke-test fixture for the CLI end-to-end loop
+above. Syntax check: `.venv/bin/python -m py_compile svm_text.py merge_fusion_calls.py`.
+
+This repo follows the superpowers protocol: invoke the matching skill
+(`superpowers:brainstorming` for new features, `superpowers:test-driven-development` before
+implementation, `superpowers:systematic-debugging` for bugs) even when a change looks
+fully-specified already.
 
 ## Architecture
 

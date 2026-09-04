@@ -42,6 +42,14 @@ filtered_fusions):
                      ``gene5_breakpoint`` positions in the cluster, weighted by
                      how often each position occurs
 - ``BP2_rao_score``  same, over ``gene3_breakpoint``
+- ``BP1_rao_score_reads`` / ``BP2_rao_score_reads``
+                     same, weighted by read support instead of occurrence
+                     count. Per-row "reads" = ``max_split_cnt + max_span_cnt``,
+                     or just ``max_span_cnt`` when ``max_split_cnt`` is the
+                     ``-1`` sentinel.
+- ``BP1_rao_score_callers`` / ``BP2_rao_score_callers``
+                     same, weighted by the number of distinct ``tool`` values
+                     (callers) reported at each position
 - ``n_arriba``       number of final_cff rows in the cluster with ``tool`` == arriba
 - ``n_high`` / ``n_med`` / ``n_low``
                      confidence counts from the arriba_fusions file, for the
@@ -102,6 +110,8 @@ FINAL_CFF_KEY_COLS = (
     "gene3_chr",
     "gene3_breakpoint",
     "reann_gene3_symbol",
+    "max_split_cnt",
+    "max_span_cnt",
 )
 ARRIBA_KEY_COLS = ("#gene1", "gene2", "breakpoint1", "breakpoint2", "confidence")
 CONFIDENCE_LEVELS = ("high", "medium", "low")
@@ -308,6 +318,49 @@ def _side_rao_score(breakpoints: pd.Series) -> float:
     return float(np.log1p(rao_qe(freq.index.to_numpy(), freq.to_numpy())))
 
 
+def _compute_reads(split_cnt: pd.Series, span_cnt: pd.Series) -> pd.Series:
+    """Per-row read support: max_split_cnt + max_span_cnt, or just max_span_cnt
+    when max_split_cnt is the ``-1`` sentinel (not added in)."""
+    split = pd.to_numeric(split_cnt, errors="coerce")
+    span = pd.to_numeric(span_cnt, errors="coerce")
+    return (split + span).where(split != -1, span)
+
+
+def _side_rao_score_reads(breakpoints: pd.Series, reads: pd.Series) -> float:
+    """log1p(rao_qe) for one fusion side, weighted by read support.
+
+    breakpoints: raw breakpoint positions (may repeat across callers)
+    reads: supporting read counts, same index/order as breakpoints
+    """
+    df = pd.DataFrame({
+        "pos": pd.to_numeric(breakpoints, errors="coerce"),
+        "reads": pd.to_numeric(reads, errors="coerce"),
+    }).dropna()
+
+    if df.empty:
+        return float("nan")
+
+    # collapse duplicate positions (multiple callers hitting same breakpoint)
+    # by summing their read support
+    agg = df.groupby("pos", as_index=False)["reads"].sum()
+
+    return float(np.log1p(rao_qe(agg["pos"].to_numpy(), agg["reads"].to_numpy())))
+
+
+def _side_rao_score_callers(breakpoints: pd.Series, caller: pd.Series) -> float:
+    """log1p(rao_qe) weighted by number of distinct callers per position."""
+    df = pd.DataFrame({
+        "pos": pd.to_numeric(breakpoints, errors="coerce"),
+        "caller": caller,
+    }).dropna()
+
+    if df.empty:
+        return float("nan")
+
+    agg = df.groupby("pos")["caller"].nunique().reset_index(name="n_callers")
+    return float(np.log1p(rao_qe(agg["pos"].to_numpy(), agg["n_callers"].to_numpy())))
+
+
 def load_final_cff(path: str, sep: str) -> pd.DataFrame:
     df = _read(path, sep, "final_cff")
     _require_cols(df, FINAL_CFF_KEY_COLS, "final_cff")
@@ -317,6 +370,7 @@ def load_final_cff(path: str, sep: str) -> pd.DataFrame:
     kept.attrs["n_dropped_na_cluster"] = len(df) - len(kept)
     if kept.empty:
         raise SystemExit(f"error: final_cff {path} has no rows with a cluster")
+    kept["_reads"] = _compute_reads(kept["max_split_cnt"], kept["max_span_cnt"])
     return kept
 
 
@@ -474,6 +528,10 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
                 "cluster_size": len(grp),
                 "BP1_rao_score": _side_rao_score(grp["gene5_breakpoint"]),
                 "BP2_rao_score": _side_rao_score(grp["gene3_breakpoint"]),
+                "BP1_rao_score_reads": _side_rao_score_reads(grp["gene5_breakpoint"], grp["_reads"]),
+                "BP2_rao_score_reads": _side_rao_score_reads(grp["gene3_breakpoint"], grp["_reads"]),
+                "BP1_rao_score_callers": _side_rao_score_callers(grp["gene5_breakpoint"], grp["tool"]),
+                "BP2_rao_score_callers": _side_rao_score_callers(grp["gene3_breakpoint"], grp["tool"]),
                 "n_arriba": n_arriba,
                 "n_high": n_high,
                 "n_med": n_med,
@@ -483,6 +541,8 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
         )
     cols = [
         "cluster", "cluster_size", "BP1_rao_score", "BP2_rao_score",
+        "BP1_rao_score_reads", "BP2_rao_score_reads",
+        "BP1_rao_score_callers", "BP2_rao_score_callers",
         "n_arriba", "n_high", "n_med", "n_low", "arriba_conf_score",
     ]
     return pd.DataFrame(rows, columns=cols).set_index("cluster")
@@ -500,7 +560,7 @@ def merge(df_ann: pd.DataFrame, df_filt: pd.DataFrame) -> pd.DataFrame:
 
 
 def attach_cluster_stats(merged: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
-    """Append the eight per-cluster stat columns by matching ``cluster``."""
+    """Append the twelve per-cluster stat columns by matching ``cluster``."""
     if "cluster" not in merged.columns:
         raise SystemExit(
             "error: merged output has no 'cluster' column to join final_cff stats on "

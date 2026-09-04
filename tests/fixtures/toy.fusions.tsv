@@ -1,0 +1,4 @@
+#gene1	gene2	strand1(gene/fusion)	strand2(gene/fusion)	breakpoint1	breakpoint2	site1	site2	confidence
+GENEA	GENEB	+/+	-/-	1:1002	2:5001	CDS/splice-site	CDS/splice-site	high
+GENEC	GENED	+/+	-/-	3:2002	4:6001	CDS/splice-site	CDS/splice-site	medium
+GENEX(12345),GENEY(6789)	GENEH	-/-	-/-	7:4000	8:8000	intergenic	CDS/splice-site	low

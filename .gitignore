@@ -2,4 +2,6 @@
 __pycache__/
 *.joblib
 preds.csv
+test.csv
+test_data/
 .claude/settings.local.json

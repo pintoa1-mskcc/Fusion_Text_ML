@@ -1,0 +1,9 @@
+cluster	tool	gene5_chr	gene5_breakpoint	gene5_strand	gene3_chr	gene3_breakpoint	gene3_strand	sample	disease	max_split_cnt	max_span_cnt	reann_gene5_symbol	reann_gene3_symbol	FusionType
+c1	starfusion	chr1	1000	+	chr2	5000	-	toy_sample	NA	10	5	GENEA	GENEB	NoDriverGene
+c1	fusioncatcher	chr1	1000	+	chr2	5000	-	toy_sample	NA	-1	8	GENEA	GENEB	NoDriverGene
+c1	arriba	chr1	1002	+	chr2	5001	-	toy_sample	NA	3	2	GENEA	GENEB	NoDriverGene
+c2	starfusion	chr3	2000	+	chr4	6000	-	toy_sample	NA	6	4	GENEC	GENED	NoDriverGene
+c2	arriba	chr3	2002	+	chr4	6001	-	toy_sample	NA	2	1	GENEC	GENED	NoDriverGene
+c3	starfusion	chr5	3000	+	chr6	7000	+	toy_sample	NA	5	3	GENEE	GENEF	NoDriverGene
+c3	fusioncatcher	chr5	3000	+	chr6	7000	+	toy_sample	NA	4	2	GENEE	GENEF	NoDriverGene
+c4	arriba	chr7	4000	-	chr8	8000	-	toy_sample	NA	1	1	NA	GENEH	NoDriverGene

@@ -1,0 +1,3 @@
+TumorId	Chr1	Pos1	Str1	Chr2	Pos2	Str2	Gene1	Transcript1	Site1Description	Gene2	Transcript2	Site2Description	Fusion	TotalReadSupport	CallMethod	FrameCallMethod	Note	Annotation	Position	Significance	TF	Kinase
+toy_sample	1	1000	+	2	5000	-	GENEA	ENST00000000001.1	Exon 1 of GENEA(+)	GENEB	ENST00000000002.1	Exon 1 of GENEB(-)	Fusion {GENEA::GENEB}	20	AFS	AFG	Note: toy fusion GENEA::GENEB.	toy annotation	GENEA exon1 to GENEB exon1	KeyGene	TRUE	FALSE
+toy_sample	3	2000	+	4	6000	-	GENEC	ENST00000000003.1	Exon 2 of GENEC(+)	GENED	ENST00000000004.1	Exon 3 of GENED(-)	Fusion {GENEC::GENED}	15	AF	FG	Note: toy fusion GENEC::GENED.	toy annotation	GENEC exon2 to GENED exon3	NA	FALSE	FALSE
