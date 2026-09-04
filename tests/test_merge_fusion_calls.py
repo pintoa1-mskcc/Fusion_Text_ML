@@ -7,11 +7,13 @@ import pandas as pd
 import pytest
 
 from merge_fusion_calls import (
+    SOMATIC_FLAG_NAMES,
     _compute_reads,
     _side_rao_score,
     _side_rao_score_callers,
     _side_rao_score_reads,
     add_call_method_flags,
+    add_somatic_flag_columns,
     cluster_stats,
     load_arriba_fusions,
     load_final_cff,
@@ -153,6 +155,42 @@ def test_add_call_method_flags_adds_n_callers():
     merged = pd.DataFrame({"CallMethod": ["AFS", "AF", "F", "", None]})
     out = add_call_method_flags(merged)
     assert out["n_callers"].tolist() == [3, 2, 1, 0, 0]
+
+
+# --------------------------------------------------------------------------- #
+# somatic_flags one-hot encoding
+# --------------------------------------------------------------------------- #
+def test_add_somatic_flag_columns_one_hot_encodes_known_names():
+    merged = pd.DataFrame(
+        {
+            "somatic_flags": [
+                "Known,COSMIC",
+                "TCGA",
+                None,
+                "Alaei-Mahabadi 18 cancers",
+            ]
+        }
+    )
+    out = add_somatic_flag_columns(merged)
+
+    # every known name got its own column
+    for name in SOMATIC_FLAG_NAMES:
+        assert name in out.columns
+
+    assert out.loc[0, "Known"] == 1
+    assert out.loc[0, "COSMIC"] == 1
+    assert out.loc[0, "TCGA"] == 0  # only set on row 1, not row 0
+    assert out.loc[1, "TCGA"] == 1
+    assert out.loc[2, list(SOMATIC_FLAG_NAMES)].tolist() == [0] * len(SOMATIC_FLAG_NAMES)  # NaN row
+    assert out.loc[3, "Alaei-Mahabadi 18 cancers"] == 1
+
+
+def test_add_somatic_flag_columns_ignores_unrecognized_tokens():
+    # a token not in SOMATIC_FLAG_NAMES is silently dropped, not an error
+    merged = pd.DataFrame({"somatic_flags": ["TCGA,SomeFutureSource"]})
+    out = add_somatic_flag_columns(merged)
+    assert out.loc[0, "TCGA"] == 1
+    assert "SomeFutureSource" not in out.columns
 
 
 def test_load_final_cff_requires_max_split_and_span_cnt(tmp_path):

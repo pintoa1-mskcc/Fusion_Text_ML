@@ -77,3 +77,12 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     assert df.loc["c1", "cv_reads"] > 0
     assert df.loc["c4", "min_reads"] == 2.0  # max_split_cnt(1) + max_span_cnt(1)
     assert df.loc["c4", "cv_reads"] == 0.0
+
+    # somatic_flags one-hot encoding: c1 "Known,COSMIC"; c2 "TCGA,SomeFutureSource" (unknown
+    # token silently dropped); c3 "NA" (all zero); c4 a name containing a comma-free hyphen
+    assert df.loc["c1", ["Known", "COSMIC"]].tolist() == [1, 1]
+    assert df.loc["c1", "TCGA"] == 0
+    assert df.loc["c2", "TCGA"] == 1
+    assert "SomeFutureSource" not in df.columns
+    assert df.loc["c3", "Known"] == 0
+    assert df.loc["c4", "Alaei-Mahabadi 18 cancers"] == 1

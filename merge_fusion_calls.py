@@ -32,6 +32,14 @@ character count -- the number of callers that reported that specific fusion
 call; not an aggregate over every final_cff row sharing its cluster). The
 check is case-insensitive; a missing/blank ``CallMethod`` yields ``0, 0, 0, 0``.
 
+somatic_flags encoding
+-----------------------
+``somatic_flags`` (from filtered_fusions) is a comma-separated list of somatic
+fusion database names (e.g. ``"Known,COSMIC"``). It is one-hot encoded into
+21 named 0/1 columns, one per known database (see ``SOMATIC_FLAG_NAMES``),
+appended at the end of the output. A token not in that known list is
+silently ignored; a missing/blank ``somatic_flags`` gives 0 for all 21.
+
 final_cff cluster stats
 -----------------------
 The final_cff file is NOT merged. Rows with a missing/blank ``cluster`` are
@@ -607,6 +615,61 @@ def add_call_method_flags(merged: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+# Known somatic_flags database names -> their own 0/1 output column, in this order.
+SOMATIC_FLAG_NAMES = (
+    "Alaei-Mahabadi 18 cancers",
+    "DepMap CCLE",
+    "CCLE Klijn",
+    "CCLE Vellichirammal",
+    "Cancer Genome Project",
+    "ChimerKB 4.0",
+    "ChimerPub 4.0",
+    "ChimerSeq 4.0",
+    "COSMIC",
+    "Bao gliomas",
+    "Known",
+    "Mitelman DB",
+    "TCGA oesophageal carcinomas",
+    "Bailey pancreatic cancers",
+    "PCAWG",
+    "Robinson prostate cancers",
+    "TCGA",
+    "TumorFusions tumor",
+    "TCGA Gao",
+    "TCGA Vellichirammal",
+    "TICdb",
+)
+
+
+def _parse_somatic_flags(val) -> set[str]:
+    """Comma-separated ``somatic_flags`` value -> the set of its (stripped) tokens."""
+    s = _clean(val)
+    if not s:
+        return set()
+    return {t.strip() for t in s.split(",") if t.strip()}
+
+
+def add_somatic_flag_columns(merged: pd.DataFrame) -> pd.DataFrame:
+    """One-hot encode ``somatic_flags`` into 21 named 0/1 columns, one per
+    :data:`SOMATIC_FLAG_NAMES`.
+
+    ``somatic_flags`` is a comma-separated list of database names (e.g.
+    ``"Known,COSMIC"``); a name gets 1 in its column when present in the list,
+    else 0. A token not in ``SOMATIC_FLAG_NAMES`` is silently ignored (no
+    column, no error). A missing/blank ``somatic_flags`` gives 0 for all 21.
+    New columns are appended at the end, in ``SOMATIC_FLAG_NAMES`` order.
+    """
+    if "somatic_flags" not in merged.columns:
+        raise SystemExit(
+            "error: merged output has no 'somatic_flags' column to encode "
+            "(expected from filtered_fusions)"
+        )
+    tokens = merged["somatic_flags"].map(_parse_somatic_flags)
+    for name in SOMATIC_FLAG_NAMES:
+        merged[name] = tokens.map(lambda t, name=name: int(name in t))
+    return merged
+
+
 def summarize(
     df_ann: pd.DataFrame,
     df_filt: pd.DataFrame,
@@ -687,6 +750,7 @@ def main(argv: list[str] | None = None) -> None:
     merged = merge(df_ann, df_filt)
     merged = attach_cluster_stats(merged, stats)
     merged = add_call_method_flags(merged)
+    merged = add_somatic_flag_columns(merged)
 
     merged.to_csv(args.output, index=False)
     print(summarize(df_ann, df_filt, df_cff, df_arriba, stats, merged))
