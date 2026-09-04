@@ -84,7 +84,14 @@ filtered_fusions):
                      match that lands on arriba rows of differing confidence --
                      so n_high + n_med + n_low == n_arriba.
 - ``arriba_conf_score``
-                     ``(3*n_high + 2*n_med + n_low) / max(n_arriba, 1)``
+                     saturating ratio, not a per-call average: ``raw_sum / (raw_sum
+                     + ARRIBA_CONF_SATURATION_K)`` where ``raw_sum = 3*n_high +
+                     2*n_med + n_low``. Rewards corroborating evidence -- more
+                     matching calls raise the score even at mixed confidence --
+                     while staying bounded. See ``_arriba_conf_score``'s docstring
+                     for the full reasoning (chosen to be nonlinear in n_high/
+                     n_med/n_low so it adds information svm_text.py's LinearSVC
+                     can't already learn from those columns directly).
 
 A cluster present in final_cff but with no arriba rows gets 0 for the five
 arriba columns (score 0.0). Output rows whose ``cluster`` is missing, or is a
@@ -132,6 +139,9 @@ FINAL_CFF_KEY_COLS = (
 )
 ARRIBA_KEY_COLS = ("#gene1", "gene2", "breakpoint1", "breakpoint2", "confidence")
 CONFIDENCE_LEVELS = ("high", "medium", "low")
+# Anchors _arriba_conf_score so one lone high-confidence call (raw_sum=3) scores 0.5 --
+# half of the saturating ceiling of 1.0. See _arriba_conf_score for the full reasoning.
+ARRIBA_CONF_SATURATION_K = 3
 NA_CLUSTER_TOKENS = ("", "na", "nan", "none", "null", ".")
 
 
@@ -378,6 +388,32 @@ def _side_rao_score_callers(breakpoints: pd.Series, caller: pd.Series) -> float:
     return float(np.log1p(rao_qe(agg["pos"].to_numpy(), agg["n_callers"].to_numpy())))
 
 
+def _arriba_conf_score(n_high: int, n_med: int, n_low: int) -> float:
+    """Saturating-ratio confidence score for a cluster's Arriba-matched rows.
+
+    raw_sum / (raw_sum + ARRIBA_CONF_SATURATION_K), where
+    raw_sum = 3*n_high + 2*n_med + n_low mirrors Arriba's own confidence
+    ranking (high > medium > low).
+
+    Why a saturating ratio and not a plain weighted average or a raw sum:
+    svm_text.py trains a LinearSVC on these columns (n_high/n_med/n_low/n_arriba
+    included), and a linear model already learns its own linear combination of
+    them directly from data. A hand-engineered feature that is itself linear in
+    those columns (e.g. the raw weighted sum, or the previous per-call average
+    raw_sum / n_arriba) is redundant -- collinear with information the model
+    already has. This formula is deliberately nonlinear (division by a sum that
+    includes the raw_sum itself) so it encodes something a linear model cannot
+    reconstruct on its own: more corroborating evidence should raise confidence
+    (unlike the old per-call average, where e.g. 2 high + 2 low scored *lower*
+    than 1 high alone), while the saturation keeps raw cluster size from
+    dominating the score outright. ARRIBA_CONF_SATURATION_K=3 anchors one lone
+    high-confidence call (raw_sum=3) to a score of 0.5 -- half of the ceiling
+    the ratio approaches as evidence accumulates.
+    """
+    raw_sum = 3 * n_high + 2 * n_med + n_low
+    return raw_sum / (raw_sum + ARRIBA_CONF_SATURATION_K)
+
+
 def load_final_cff(path: str, sep: str) -> pd.DataFrame:
     df = _read(path, sep, "final_cff")
     _require_cols(df, FINAL_CFF_KEY_COLS, "final_cff")
@@ -555,7 +591,7 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
                 "n_high": n_high,
                 "n_med": n_med,
                 "n_low": n_low,
-                "arriba_conf_score": (3 * n_high + 2 * n_med + n_low) / max(n_arriba, 1),
+                "arriba_conf_score": _arriba_conf_score(n_high, n_med, n_low),
             }
         )
     cols = [

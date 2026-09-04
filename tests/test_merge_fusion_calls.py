@@ -8,6 +8,7 @@ import pytest
 
 from merge_fusion_calls import (
     SOMATIC_FLAG_NAMES,
+    _arriba_conf_score,
     _compute_reads,
     _side_rao_score,
     _side_rao_score_callers,
@@ -47,6 +48,26 @@ def test_compute_reads_sentinel_uses_span_only():
 
 def test_compute_reads_non_numeric_is_nan():
     assert _compute_reads(pd.Series(["x"]), pd.Series([5])).isna().all()
+
+
+# --------------------------------------------------------------------------- #
+# _arriba_conf_score
+# --------------------------------------------------------------------------- #
+def test_arriba_conf_score_more_corroboration_beats_lone_high_confidence_call():
+    # 2 high + 2 low (more corroborating evidence, mixed confidence) should score
+    # higher than 1 high alone -- the invariant the saturating-ratio redesign fixes.
+    lone_high = _arriba_conf_score(n_high=1, n_med=0, n_low=0)
+    two_high_two_low = _arriba_conf_score(n_high=2, n_med=0, n_low=2)
+    assert two_high_two_low > lone_high
+
+
+def test_arriba_conf_score_zero_calls_is_zero():
+    assert _arriba_conf_score(n_high=0, n_med=0, n_low=0) == 0.0
+
+
+def test_arriba_conf_score_hand_derived_value():
+    # raw_sum = 3*2 + 2*0 + 1*2 = 8; K = 3 -> 8 / (8 + 3)
+    assert _arriba_conf_score(n_high=2, n_med=0, n_low=2) == pytest.approx(8 / 11)
 
 
 # --------------------------------------------------------------------------- #

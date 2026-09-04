@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from merge_fusion_calls import main
 
@@ -41,14 +42,16 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     # c1: 3 final_cff rows (incl. a max_split_cnt == -1 sentinel row) + 1 arriba "high" match
     assert df.loc["c1", "n_arriba"] == 1
     assert df.loc["c1", "n_high"] == 1
-    assert df.loc["c1", "arriba_conf_score"] == 3.0
+    # raw_sum = 3*1 = 3; K = 3 -> 3 / (3 + 3)
+    assert df.loc["c1", "arriba_conf_score"] == pytest.approx(0.5)
     # reads-weighting is a genuinely different number from the occurrence-weighted score
     assert df.loc["c1", "BP1_rao_score_reads"] != df.loc["c1", "BP1_rao_score"]
 
     # c2: 1 arriba "medium" match
     assert df.loc["c2", "n_arriba"] == 1
     assert df.loc["c2", "n_med"] == 1
-    assert df.loc["c2", "arriba_conf_score"] == 2.0
+    # raw_sum = 2*1 = 2; K = 3 -> 2 / (2 + 3)
+    assert df.loc["c2", "arriba_conf_score"] == pytest.approx(0.4)
 
     # c3: no tool==arriba rows in the cluster -> the 5 arriba columns default to 0 / 0.0
     assert df.loc["c3", "n_arriba"] == 0
@@ -59,7 +62,8 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     # gene3-only partial key, matching the "low" confidence toy arriba row
     assert df.loc["c4", "n_arriba"] == 1
     assert df.loc["c4", "n_low"] == 1
-    assert df.loc["c4", "arriba_conf_score"] == 1.0
+    # raw_sum = 1*1 = 1; K = 3 -> 1 / (1 + 3)
+    assert df.loc["c4", "arriba_conf_score"] == pytest.approx(0.25)
 
     # CallMethod flags derived correctly across both fusion_annotation files
     assert df.loc["c1", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [1, 1, 1]  # AFS

@@ -63,9 +63,11 @@ Fourteen per-cluster columns from `final_cff` + `arriba_fusions` attach to outpu
 - `min_reads` / `cv_reads` — min and coefficient of variation (population stdev / mean) of per-row
   read support across the cluster. `cv_reads` is `0.0` (never `NaN`) for a single-row cluster.
 - `n_arriba`, `n_high` / `n_med` / `n_low`, `arriba_conf_score` — arriba confidence counts and a
-  `(3*n_high + 2*n_med + n_low) / max(n_arriba, 1)` score. Every `tool == arriba` `final_cff` row
-  must match an `arriba_fusions` row, or the run hard-errors. A cluster with no arriba rows gets
-  `0` / `0.0` for these five; a cluster absent from `final_cff` gets `NaN` for all fourteen.
+  saturating-ratio score, `raw_sum / (raw_sum + ARRIBA_CONF_SATURATION_K)` where
+  `raw_sum = 3*n_high + 2*n_med + n_low` (see `_arriba_conf_score`'s docstring for why it's a
+  saturating ratio rather than a per-call average or raw sum). Every `tool == arriba` `final_cff`
+  row must match an `arriba_fusions` row, or the run hard-errors. A cluster with no arriba rows
+  gets `0` / `0.0` for these five; a cluster absent from `final_cff` gets `NaN` for all fourteen.
 
 Row-level (not cluster-aggregated) columns:
 
@@ -97,7 +99,7 @@ column contract.
 ### Commands
 
 ```bash
-# train: fit on a stratified split, print test metrics, dump model.joblib
+# train: stratified k-fold CV for stable metrics, fit final model on all rows, dump model.joblib
 .venv/bin/python svm_text.py train --data merged.csv \
     --text-col n_callers,cluster_size,BP1_rao_score,tool,somatic_flags --label-col label \
     --model-out model.joblib
@@ -115,8 +117,8 @@ column contract.
 | `--text-col` | `text` | Feature column, or comma-separated list of feature columns. |
 | `--label-col` | `label` | Label column. |
 | `--model-out` | `model.joblib` | Output path for the saved model. |
-| `--test-size` | `0.2` | Held-out fraction for the stratified split. |
-| `--seed` | `42` | Random seed for the split and the SVM. |
+| `--cv-folds` | `5` | Stratified k-fold CV splits for the reported metrics; the smallest class must have at least this many rows. |
+| `--seed` | `42` | Random seed for the CV folds and the SVM. |
 
 For `evaluate` / `predict`, `--text-col` and `--label-col` default to the values stored in the
 model. `predict` requires `--data`.
