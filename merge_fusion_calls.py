@@ -27,8 +27,10 @@ CallMethod caller flags
 ``CallMethod`` (from fusion_annotation) is a letter set naming the callers that
 made each fusion -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
 three 0/1 columns appended at the end of the output: ``Arriba`` (letter ``A``),
-``FusionCatcher`` (``F``), ``StarFusion`` (``S``). The check is case-insensitive;
-a missing/blank ``CallMethod`` yields ``0, 0, 0``.
+``FusionCatcher`` (``F``), ``StarFusion`` (``S``), plus ``n_callers`` (its
+character count -- the number of callers that reported that specific fusion
+call; not an aggregate over every final_cff row sharing its cluster). The
+check is case-insensitive; a missing/blank ``CallMethod`` yields ``0, 0, 0, 0``.
 
 final_cff cluster stats
 -----------------------
@@ -50,6 +52,13 @@ filtered_fusions):
 - ``BP1_rao_score_callers`` / ``BP2_rao_score_callers``
                      same, weighted by the number of distinct ``tool`` values
                      (callers) reported at each position
+- ``min_reads``      minimum per-row "reads" (see above) across the cluster's
+                     final_cff rows
+- ``cv_reads``       coefficient of variation of "reads" across the cluster's
+                     final_cff rows: population stdev (``ddof=0``) / mean.
+                     ``0.0`` (not ``NaN``) for a single-row cluster -- keeps
+                     the column free of NaN for LinearSVC, consistent with
+                     rao_qe's own single-point convention above
 - ``n_arriba``       number of final_cff rows in the cluster with ``tool`` == arriba
 - ``n_high`` / ``n_med`` / ``n_low``
                      confidence counts from the arriba_fusions file, for the
@@ -532,6 +541,8 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
                 "BP2_rao_score_reads": _side_rao_score_reads(grp["gene3_breakpoint"], grp["_reads"]),
                 "BP1_rao_score_callers": _side_rao_score_callers(grp["gene5_breakpoint"], grp["tool"]),
                 "BP2_rao_score_callers": _side_rao_score_callers(grp["gene3_breakpoint"], grp["tool"]),
+                "min_reads": grp["_reads"].min(),
+                "cv_reads": grp["_reads"].std(ddof=0) / grp["_reads"].mean(),
                 "n_arriba": n_arriba,
                 "n_high": n_high,
                 "n_med": n_med,
@@ -543,6 +554,7 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
         "cluster", "cluster_size", "BP1_rao_score", "BP2_rao_score",
         "BP1_rao_score_reads", "BP2_rao_score_reads",
         "BP1_rao_score_callers", "BP2_rao_score_callers",
+        "min_reads", "cv_reads",
         "n_arriba", "n_high", "n_med", "n_low", "arriba_conf_score",
     ]
     return pd.DataFrame(rows, columns=cols).set_index("cluster")
@@ -560,7 +572,7 @@ def merge(df_ann: pd.DataFrame, df_filt: pd.DataFrame) -> pd.DataFrame:
 
 
 def attach_cluster_stats(merged: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
-    """Append the twelve per-cluster stat columns by matching ``cluster``."""
+    """Append the fourteen per-cluster stat columns by matching ``cluster``."""
     if "cluster" not in merged.columns:
         raise SystemExit(
             "error: merged output has no 'cluster' column to join final_cff stats on "
@@ -577,10 +589,11 @@ CALL_METHOD_FLAGS = (("A", "Arriba"), ("F", "FusionCatcher"), ("S", "StarFusion"
 
 
 def add_call_method_flags(merged: pd.DataFrame) -> pd.DataFrame:
-    """Expand ``CallMethod`` into 0/1 ``Arriba`` / ``FusionCatcher`` / ``StarFusion``.
+    """Expand ``CallMethod`` into 0/1 ``Arriba`` / ``FusionCatcher`` / ``StarFusion``,
+    plus ``n_callers`` (its character count -- each letter is one caller).
 
     Case-insensitive letter membership; a missing/blank ``CallMethod`` gives 0 for
-    all three. New columns are appended at the end.
+    all three flags and ``n_callers``. New columns are appended at the end.
     """
     if "CallMethod" not in merged.columns:
         raise SystemExit(
@@ -590,6 +603,7 @@ def add_call_method_flags(merged: pd.DataFrame) -> pd.DataFrame:
     codes = merged["CallMethod"].map(lambda v: _clean(v).upper())
     for letter, col in CALL_METHOD_FLAGS:
         merged[col] = codes.str.contains(letter, regex=False).astype(int)
+    merged["n_callers"] = codes.str.len()
     return merged
 
 

@@ -11,6 +11,7 @@ from merge_fusion_calls import (
     _side_rao_score,
     _side_rao_score_callers,
     _side_rao_score_reads,
+    add_call_method_flags,
     cluster_stats,
     load_arriba_fusions,
     load_final_cff,
@@ -115,6 +116,43 @@ def test_cluster_stats_reads_and_callers_columns(tmp_path):
 
     # the reads-weighted score is genuinely different from the pre-existing occurrence score
     assert row["BP1_rao_score"] != pytest.approx(row["BP1_rao_score_reads"])
+
+    # min_reads / cv_reads over all 3 rows' reads [15, 8, 5] (not grouped by position)
+    # cv_reads uses population stdev (ddof=0): NaN-free even for single-row clusters, and
+    # consistent with rao_qe's own n=1 convention of 0.0 (see below).
+    reads_arr = np.array([15.0, 8.0, 5.0])
+    assert row["min_reads"] == 5.0
+    expected_cv = reads_arr.std(ddof=0) / reads_arr.mean()
+    assert row["cv_reads"] == pytest.approx(expected_cv)
+
+
+def test_cluster_stats_cv_reads_is_zero_for_a_single_row_cluster(tmp_path):
+    # population stdev of one point is 0 (not NaN) -- avoids feeding LinearSVC a NaN feature,
+    # and matches rao_qe's own single-point convention elsewhere in this file
+    cff_path = _write(
+        tmp_path / "final_cff.tsv",
+        FINAL_CFF_HEADER + "2\tarriba\t1\t1002\tGENEA\t2\t5001\tGENEB\t3\t2\n",
+    )
+    arriba_path = _write(
+        tmp_path / "arriba_fusions.tsv",
+        "#gene1\tgene2\tbreakpoint1\tbreakpoint2\tconfidence\n"
+        "GENEA\tGENEB\t1:1002\t2:5001\thigh\n",
+    )
+    df_cff = load_final_cff(cff_path, "\t")
+    df_arriba = load_arriba_fusions(arriba_path, "\t")
+    row = cluster_stats(df_cff, df_arriba).loc["2"]
+
+    assert row["min_reads"] == 5.0  # split(3) + span(2)
+    assert row["cv_reads"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# n_callers (add_call_method_flags)
+# --------------------------------------------------------------------------- #
+def test_add_call_method_flags_adds_n_callers():
+    merged = pd.DataFrame({"CallMethod": ["AFS", "AF", "F", "", None]})
+    out = add_call_method_flags(merged)
+    assert out["n_callers"].tolist() == [3, 2, 1, 0, 0]
 
 
 def test_load_final_cff_requires_max_split_and_span_cnt(tmp_path):

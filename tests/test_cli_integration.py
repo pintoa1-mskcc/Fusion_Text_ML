@@ -64,3 +64,16 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     # CallMethod flags derived correctly across both fusion_annotation files
     assert df.loc["c1", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [1, 1, 1]  # AFS
     assert df.loc["c3", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [0, 1, 0]  # F
+
+    # n_callers = len(CallMethod), per output row
+    assert df.loc["c1", "n_callers"] == 3  # AFS
+    assert df.loc["c2", "n_callers"] == 2  # AF
+    assert df.loc["c3", "n_callers"] == 1  # F
+    assert df.loc["c4", "n_callers"] == 2  # AS
+
+    # min_reads / cv_reads: c1 has 3 final_cff rows with reads [15, 8, 5] -> min 5, cv defined;
+    # c4 has a single final_cff row -> cv_reads is 0.0 (population stdev of one point)
+    assert df.loc["c1", "min_reads"] == 5.0
+    assert df.loc["c1", "cv_reads"] > 0
+    assert df.loc["c4", "min_reads"] == 2.0  # max_split_cnt(1) + max_span_cnt(1)
+    assert df.loc["c4", "cv_reads"] == 0.0
