@@ -317,7 +317,6 @@ def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
         c1, p1, c2, p2 = parsed
         keys.append(build_key(extract_gene_pair(fus), c1, p1, c2, p2))
 
-    df = df.rename(columns={"TF": "TF_f2"})
     df.insert(0, "fusion_key", keys)
     return df
 

@@ -186,6 +186,17 @@ def test_load_filtered_fusions_requires_tool_column(tmp_path):
         load_filtered_fusions(str(path), sep="\t")
 
 
+def test_load_filtered_fusions_keeps_tf_column_name(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text(
+        "fusion\tbreakpoint\ttool\tTF\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tFALSE\n"
+    )
+    df = load_filtered_fusions(str(path), sep="\t")
+    assert "TF" in df.columns
+    assert "TF_f2" not in df.columns
+
+
 # --------------------------------------------------------------------------- #
 # somatic_flags one-hot encoding
 # --------------------------------------------------------------------------- #
