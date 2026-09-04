@@ -153,6 +153,19 @@ TDD throughout (per repo convention).
 - Delete `tests/fixtures/toy_AllAnnotatedSVs.txt` and
   `tests/fixtures/toy_AllAnnotatedSVs.novel.txt`.
 
+## Addendum: `action == "drop"` filtering
+
+Added during plan-writing (approved separately from the rest of this spec):
+`filtered_fusions` rows whose `action` column is `"drop"` (case-insensitive,
+whitespace-trimmed) are filtered out in `load_filtered_fusions`, before
+key-building, and never reach the output. Mirrors the existing
+`load_final_cff` pattern of dropping rows early and tracking the count via
+`df.attrs` (`n_dropped_action`, alongside the existing `n_dropped_na_cluster`)
+for `summarize()` to report. `"action"` is added to `FILTERED_FUSIONS_KEY_COLS`
+so a missing column fails fast. See the implementation plan
+(`docs/superpowers/plans/2026-09-04-remove-fusion-annotation.md`, Task 4) for
+exact code.
+
 ## Out of scope
 
 - No behavior change to `final_cff`/`arriba_fusions` handling, rao-score
