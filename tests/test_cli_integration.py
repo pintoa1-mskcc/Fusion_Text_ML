@@ -1,6 +1,6 @@
 """End-to-end test of `merge_fusion_calls.py main()` against toy fixtures modeled on the
-real 4-file input shape (see tests/fixtures/) -- fake gene names/positions, real column
-structure. Exercises: two-file --fusion-annotation stacking, the reads/callers rao-score
+real 3-file input shape (see tests/fixtures/) -- fake gene names/positions, real column
+structure. Exercises: the action=="drop" row filter, the reads/callers rao-score
 weightings together with the pre-existing occurrence weighting, a cluster with no arriba
 rows (0-default branch), and an intergenic arriba match (gene5 side dropped from the key).
 """
@@ -21,9 +21,6 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     out_path = tmp_path / "test.csv"
     main(
         [
-            "--fusion-annotation",
-            str(FIXTURES / "toy_AllAnnotatedSVs.txt"),
-            str(FIXTURES / "toy_AllAnnotatedSVs.novel.txt"),
             "--filtered-fusions",
             str(FIXTURES / "toy_filtered_fusions.tsv"),
             "--final-cff",
@@ -36,8 +33,9 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     )
 
     df = pd.read_csv(out_path)
-    assert len(df) == 4  # one row per cluster (c1..c4), all matched
+    assert len(df) == 4  # one row per surviving filtered_fusions row (c1..c4)
     df = df.set_index("cluster")
+    assert "c5" not in df.index.tolist()  # action == "DROP" -> filtered before output
 
     # c1: 3 final_cff rows (incl. a max_split_cnt == -1 sentinel row) + 1 arriba "high" match
     assert df.loc["c1", "n_arriba"] == 1
@@ -65,11 +63,11 @@ def test_main_end_to_end_on_toy_fixtures(tmp_path):
     # raw_sum = 1*1 = 1; K = 3 -> 1 / (1 + 3)
     assert df.loc["c4", "arriba_conf_score"] == pytest.approx(0.25)
 
-    # CallMethod flags derived correctly across both fusion_annotation files
+    # tool-derived caller flags
     assert df.loc["c1", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [1, 1, 1]  # AFS
     assert df.loc["c3", ["Arriba", "FusionCatcher", "StarFusion"]].tolist() == [0, 1, 0]  # F
 
-    # n_callers = len(CallMethod), per output row
+    # n_callers = len(tool), per output row
     assert df.loc["c1", "n_callers"] == 3  # AFS
     assert df.loc["c2", "n_callers"] == 2  # AF
     assert df.loc["c3", "n_callers"] == 1  # F
