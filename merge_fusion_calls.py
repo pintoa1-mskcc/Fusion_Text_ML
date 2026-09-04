@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Merge the fusion_annotation and filtered_fusions files into one CSV for svm_text.py.
+"""Merge the filtered_fusions, final_cff, and arriba_fusions files into one CSV for
+svm_text.py.
 
-fusion_annotation carries all of its columns through unchanged (its ``TF`` column
-is renamed ``TF_f1``). ``--fusion-annotation`` accepts one or two files; two files
-must share the same column names (any order) and are stacked row-wise before
-anything else, with overlapping fusions left un-deduplicated. filtered_fusions is
-left-joined onto fusion_annotation on a composite ``fusion_key`` and contributes
-its own columns (its ``TF`` becomes ``TF_f2``).
+filtered_fusions carries all of its columns through unchanged (after dropping
+rows with ``action == "drop"``, see below) and builds the fusion_key described
+below. final_cff and arriba_fusions are not merged in -- their per-cluster
+statistics are computed separately (see "final_cff cluster stats" below) and
+attached to filtered_fusions rows by matching cluster.
+
+action==drop filtering
+-----------------------
+filtered_fusions rows whose ``action`` column is ``"drop"`` (case-insensitive,
+whitespace-trimmed) are dropped before key-building and never appear in the
+output.
 
 fusion_key format
 -----------------
@@ -16,21 +22,21 @@ fusion_key format
 - chr: leading ``chr`` stripped ("chr17" and "17" compare equal)
 - pos: bare integer ("8500970.0" tolerated)
 
-The same key is built for both files, so a fusion_annotation row and a
-filtered_fusions row match only when their gene pair and both breakpoint loci
-(chr + pos, in order) agree. Strand is kept as data but not used for matching.
-The key is written to the output so file 4 can later derive the same string and
-join on it.
+filtered_fusions builds this key from its own ``fusion`` and ``breakpoint``
+columns. The key is written to the output so downstream consumers can derive
+the same string.
 
 CallMethod caller flags
 -----------------------
-``CallMethod`` (from fusion_annotation) is a letter set naming the callers that
-made each fusion -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
+``tool`` (from filtered_fusions) is a letter set naming the callers that made
+each fusion call -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
 three 0/1 columns appended at the end of the output: ``Arriba`` (letter ``A``),
 ``FusionCatcher`` (``F``), ``StarFusion`` (``S``), plus ``n_callers`` (its
 character count -- the number of callers that reported that specific fusion
-call; not an aggregate over every final_cff row sharing its cluster). The
-check is case-insensitive; a missing/blank ``CallMethod`` yields ``0, 0, 0, 0``.
+call). The check is case-insensitive; a missing/blank ``tool`` value yields
+``0, 0, 0, 0``. Note: this is filtered_fusions' ``tool`` column, not
+final_cff's ``tool`` column (a single caller name per final_cff row) -- same
+name, different file, different shape.
 
 somatic_flags encoding
 -----------------------
@@ -99,11 +105,10 @@ cluster not present in final_cff, get ``NaN`` for all eight.
 
 Usage
 -----
-    .venv/bin/python merge_fusion_calls.py \
-        --fusion-annotation fusion_annotation.tsv [fusion_annotation2.tsv] \
-        --filtered-fusions filtered_fusions.tsv \
-        --final-cff final_cff.tsv \
-        --arriba-fusions arriba_fusions.tsv \
+    .venv/bin/python merge_fusion_calls.py \\
+        --filtered-fusions filtered_fusions.tsv \\
+        --final-cff final_cff.tsv \\
+        --arriba-fusions arriba_fusions.tsv \\
         --output merged.csv [--sep '\\t']
 
 Inputs are read with ``--sep`` (tab by default); the output is a
