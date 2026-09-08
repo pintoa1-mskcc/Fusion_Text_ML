@@ -195,9 +195,6 @@ def test_train_on_merge_fusion_calls_output(tmp_path):
     merged_path = tmp_path / "merged.csv"
     merge_main(
         [
-            "--fusion-annotation",
-            str(FIXTURES / "toy_AllAnnotatedSVs.txt"),
-            str(FIXTURES / "toy_AllAnnotatedSVs.novel.txt"),
             "--filtered-fusions", str(FIXTURES / "toy_filtered_fusions.tsv"),
             "--final-cff", str(FIXTURES / "toy_final.cff"),
             "--arriba-fusions", str(FIXTURES / "toy.fusions.tsv"),

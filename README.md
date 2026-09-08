@@ -30,14 +30,13 @@ Run everything through the venv interpreter:
 
 ## `merge_fusion_calls.py`
 
-Merges `fusion_annotation` + `filtered_fusions` on a composite `fusion_key`
-(`GENE1::GENE2|chr1:pos1|chr2:pos2`), then attaches per-cluster statistics derived from `final_cff`
-and `arriba_fusions`, plus row-level caller/somatic-flag features. Input files are tab-separated by
-default (`--sep`); output is always CSV.
+Builds a `fusion_key` (`GENE1::GENE2|chr1:pos1|chr2:pos2`) from `filtered_fusions` (after dropping
+rows where `action == "drop"`, case-insensitive), then attaches per-cluster statistics derived from
+`final_cff` and `arriba_fusions`, plus row-level caller/somatic-flag features. Input files are
+tab-separated by default (`--sep`); output is always CSV.
 
 ```bash
 .venv/bin/python merge_fusion_calls.py \
-    --fusion-annotation ann.tsv [ann2.tsv] \
     --filtered-fusions filtered.tsv \
     --final-cff final_cff.tsv \
     --arriba-fusions arriba.tsv \
@@ -46,8 +45,7 @@ default (`--sep`); output is always CSV.
 
 | Flag | Notes |
 | --- | --- |
-| `--fusion-annotation` | One or two files. Two files must share column names and are stacked row-wise (no dedup). Its `TF` column is renamed `TF_f1`. |
-| `--filtered-fusions` | Left-joined onto `fusion_annotation` on `fusion_key`. Its `TF` becomes `TF_f2`. |
+| `--filtered-fusions` | Source of `fusion_key`, `tool` (caller flags), `somatic_flags`, and `TF`. Rows with `action == "drop"` (case-insensitive) are filtered out first. |
 | `--final-cff` | Grouped by `cluster` (not row-merged); rows with a blank/`NA` cluster are dropped first. |
 | `--arriba-fusions` | Source of the per-cluster arriba confidence counts. |
 | `--output` | Path to write the merged CSV. |
@@ -71,9 +69,9 @@ Fourteen per-cluster columns from `final_cff` + `arriba_fusions` attach to outpu
 
 Row-level (not cluster-aggregated) columns:
 
-- `n_callers` — character count of `CallMethod` (e.g. `"AFS"` → `3`) for that specific row, plus
-  three 0/1 flags derived from the same letters: `Arriba` (`A`), `FusionCatcher` (`F`),
-  `StarFusion` (`S`).
+- `n_callers` — character count of `filtered_fusions`' `tool` column (e.g. `"AFS"` → `3`) for that
+  specific row, plus three 0/1 flags derived from the same letters: `Arriba` (`A`),
+  `FusionCatcher` (`F`), `StarFusion` (`S`).
 - 21 one-hot `somatic_flags` columns (one per known database name, e.g. `COSMIC`, `Known`,
   `ChimerKB 4.0` — see `SOMATIC_FLAG_NAMES` in the script for the full list). An unrecognized
   token in the comma-separated `somatic_flags` field is silently ignored.

@@ -18,7 +18,9 @@ from merge_fusion_calls import (
     cluster_stats,
     load_arriba_fusions,
     load_final_cff,
+    load_filtered_fusions,
     rao_qe,
+    summarize,
 )
 
 FINAL_CFF_HEADER = (
@@ -173,9 +175,53 @@ def test_cluster_stats_cv_reads_is_zero_for_a_single_row_cluster(tmp_path):
 # n_callers (add_call_method_flags)
 # --------------------------------------------------------------------------- #
 def test_add_call_method_flags_adds_n_callers():
-    merged = pd.DataFrame({"CallMethod": ["AFS", "AF", "F", "", None]})
-    out = add_call_method_flags(merged)
+    base = pd.DataFrame({"tool": ["AFS", "AF", "F", "", None]})
+    out = add_call_method_flags(base)
     assert out["n_callers"].tolist() == [3, 2, 1, 0, 0]
+
+
+def test_load_filtered_fusions_requires_tool_column(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text("fusion\tbreakpoint\nGENEA::GENEB\tchr1:1000:+|chr2:5000:-\n")
+    with pytest.raises(SystemExit, match=r"missing column\(s\): tool"):
+        load_filtered_fusions(str(path), sep="\t")
+
+
+def test_load_filtered_fusions_keeps_tf_column_name(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text(
+        "fusion\tbreakpoint\ttool\taction\tTF\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tNOVEL\tFALSE\n"
+    )
+    df = load_filtered_fusions(str(path), sep="\t")
+    assert "TF" in df.columns
+    assert "TF_f2" not in df.columns
+
+
+def test_load_filtered_fusions_drops_action_drop_rows(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text(
+        "fusion\tbreakpoint\ttool\taction\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tNOVEL\n"
+        "GENEC::GENED\tchr3:2000:+|chr4:6000:-\tAF\tDROP\n"
+        "GENEE::GENEF\tchr5:3000:+|chr6:7000:+\tF\t drop \n"
+    )
+    df = load_filtered_fusions(str(path), sep="\t")
+    assert len(df) == 1
+    assert df.iloc[0]["fusion"] == "GENEA::GENEB"
+    assert df.attrs["n_dropped_action"] == 2
+
+
+def test_load_filtered_fusions_missing_action_is_not_dropped(tmp_path):
+    path = tmp_path / "filtered_fusions.tsv"
+    path.write_text(
+        "fusion\tbreakpoint\ttool\taction\n"
+        "GENEA::GENEB\tchr1:1000:+|chr2:5000:-\tAFS\tNOVEL\n"
+        "GENEC::GENED\tchr3:2000:+|chr4:6000:-\tAF\t\n"
+    )
+    df = load_filtered_fusions(str(path), sep="\t")
+    assert len(df) == 2
+    assert df.attrs["n_dropped_action"] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -223,3 +269,27 @@ def test_load_final_cff_requires_max_split_and_span_cnt(tmp_path):
     )
     with pytest.raises(SystemExit, match="max_split_cnt"):
         load_final_cff(path, "\t")
+
+
+# --------------------------------------------------------------------------- #
+# summarize
+# --------------------------------------------------------------------------- #
+def test_summarize_reports_filtered_fusions_and_cluster_counts():
+    df_filt = pd.DataFrame({"fusion_key": ["k1", "k2"]})
+    df_filt.attrs["n_dropped_action"] = 3
+    df_cff = pd.DataFrame({"cluster": ["c1"]})
+    df_cff.attrs["n_dropped_na_cluster"] = 1
+    df_arriba = pd.DataFrame({"arriba_key": ["a1", "a2", "a3"]})
+    stats = pd.DataFrame({"n_arriba": [2]}, index=pd.Index(["c1"], name="cluster"))
+    output = pd.DataFrame({"cluster_size": [5, None]})
+
+    result = summarize(df_filt, df_cff, df_arriba, stats, output)
+
+    assert "filtered_fusions rows: 2" in result
+    assert "dropped action==drop: 3" in result
+    assert "output rows: 2" in result
+    assert "final_cff: 1 clusters" in result
+    assert "rows dropped (no cluster): 1" in result
+    assert "output rows with cluster stats: 1" in result
+    assert "arriba_fusions rows: 3" in result
+    assert "arriba calls in clusters: 2" in result

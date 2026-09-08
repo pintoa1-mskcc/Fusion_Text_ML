@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Merge the fusion_annotation and filtered_fusions files into one CSV for svm_text.py.
+"""Merge the filtered_fusions, final_cff, and arriba_fusions files into one CSV for
+svm_text.py.
 
-fusion_annotation carries all of its columns through unchanged (its ``TF`` column
-is renamed ``TF_f1``). ``--fusion-annotation`` accepts one or two files; two files
-must share the same column names (any order) and are stacked row-wise before
-anything else, with overlapping fusions left un-deduplicated. filtered_fusions is
-left-joined onto fusion_annotation on a composite ``fusion_key`` and contributes
-its own columns (its ``TF`` becomes ``TF_f2``).
+filtered_fusions carries all of its columns through unchanged (after dropping
+rows with ``action == "drop"``, see below) and builds the fusion_key described
+below. final_cff and arriba_fusions are not merged in -- their per-cluster
+statistics are computed separately (see "final_cff cluster stats" below) and
+attached to filtered_fusions rows by matching cluster.
+
+action==drop filtering
+-----------------------
+filtered_fusions rows whose ``action`` column is ``"drop"`` (case-insensitive,
+whitespace-trimmed) are dropped before key-building and never appear in the
+output.
 
 fusion_key format
 -----------------
@@ -16,21 +22,21 @@ fusion_key format
 - chr: leading ``chr`` stripped ("chr17" and "17" compare equal)
 - pos: bare integer ("8500970.0" tolerated)
 
-The same key is built for both files, so a fusion_annotation row and a
-filtered_fusions row match only when their gene pair and both breakpoint loci
-(chr + pos, in order) agree. Strand is kept as data but not used for matching.
-The key is written to the output so file 4 can later derive the same string and
-join on it.
+filtered_fusions builds this key from its own ``fusion`` and ``breakpoint``
+columns. The key is written to the output so downstream consumers can derive
+the same string.
 
-CallMethod caller flags
------------------------
-``CallMethod`` (from fusion_annotation) is a letter set naming the callers that
-made each fusion -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
+tool caller flags
+-----------------
+``tool`` (from filtered_fusions) is a letter set naming the callers that made
+each fusion call -- e.g. ``AFS``, ``F``, ``FS``, ``AF``. It is expanded into
 three 0/1 columns appended at the end of the output: ``Arriba`` (letter ``A``),
 ``FusionCatcher`` (``F``), ``StarFusion`` (``S``), plus ``n_callers`` (its
 character count -- the number of callers that reported that specific fusion
-call; not an aggregate over every final_cff row sharing its cluster). The
-check is case-insensitive; a missing/blank ``CallMethod`` yields ``0, 0, 0, 0``.
+call). The check is case-insensitive; a missing/blank ``tool`` value yields
+``0, 0, 0, 0``. Note: this is filtered_fusions' ``tool`` column, not
+final_cff's ``tool`` column (a single caller name per final_cff row) -- same
+name, different file, different shape.
 
 somatic_flags encoding
 -----------------------
@@ -99,11 +105,10 @@ cluster not present in final_cff, get ``NaN`` for all eight.
 
 Usage
 -----
-    .venv/bin/python merge_fusion_calls.py \
-        --fusion-annotation fusion_annotation.tsv [fusion_annotation2.tsv] \
-        --filtered-fusions filtered_fusions.tsv \
-        --final-cff final_cff.tsv \
-        --arriba-fusions arriba_fusions.tsv \
+    .venv/bin/python merge_fusion_calls.py \\
+        --filtered-fusions filtered_fusions.tsv \\
+        --final-cff final_cff.tsv \\
+        --arriba-fusions arriba_fusions.tsv \\
         --output merged.csv [--sep '\\t']
 
 Inputs are read with ``--sep`` (tab by default); the output is a
@@ -123,8 +128,7 @@ from scipy.spatial.distance import pdist, squareform
 FUSION_RE = re.compile(r"([A-Za-z0-9_.\-]+::[A-Za-z0-9_.\-]+)")
 
 # Columns each input must contain to build the key.
-FUSION_ANNOTATION_KEY_COLS = ("Chr1", "Pos1", "Chr2", "Pos2")
-FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint")
+FILTERED_FUSIONS_KEY_COLS = ("fusion", "breakpoint", "tool", "action")
 FINAL_CFF_KEY_COLS = (
     "cluster",
     "tool",
@@ -174,18 +178,10 @@ def normalize_pos(val) -> str | None:
         return None
 
 
-def extract_gene_pair(fusion, gene1=None, gene2=None) -> str | None:
-    """Pull 'GENE1::GENE2' out of a fusion string (handles 'Fusion {A::B}').
-
-    Falls back to ``gene1::gene2`` when the fusion string has no ``::`` pair.
-    """
+def extract_gene_pair(fusion) -> str | None:
+    """Pull 'GENE1::GENE2' out of a fusion string (handles 'Fusion {A::B}')."""
     match = FUSION_RE.search(_clean(fusion))
-    if match:
-        return match.group(1)
-    g1, g2 = _clean(gene1), _clean(gene2)
-    if g1 and g2:
-        return f"{g1}::{g2}"
-    return None
+    return match.group(1) if match else None
 
 
 def parse_breakpoint(bp) -> tuple[str, str, str, str] | None:
@@ -258,55 +254,14 @@ def _require_cols(df: pd.DataFrame, cols, which: str) -> None:
         )
 
 
-def _combine_fusion_annotation(paths: list[str], sep: str) -> pd.DataFrame:
-    """Read one or two fusion_annotation files and stack them row-wise.
-
-    Two files are allowed when they carry the same set of column names (order
-    doesn't matter -- the trailing file is reindexed to the first's order before
-    concat). Rows are kept as-is: overlapping fusions are not deduplicated.
-    """
-    frames = [_read(p, sep, "fusion_annotation") for p in paths]
-    first = frames[0]
-    for i, path in enumerate(paths[1:], start=1):
-        df = frames[i]
-        extra = [c for c in df.columns if c not in first.columns]
-        missing = [c for c in first.columns if c not in df.columns]
-        if extra or missing:
-            raise SystemExit(
-                f"error: fusion_annotation files have mismatched columns: "
-                f"{path} adds {extra or '[]'} and is missing {missing or '[]'} "
-                f"relative to {paths[0]}"
-            )
-        frames[i] = df[first.columns]
-    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else first
-
-
-def load_fusion_annotation(paths: list[str], sep: str) -> pd.DataFrame:
-    df = _combine_fusion_annotation(paths, sep)
-    _require_cols(df, FUSION_ANNOTATION_KEY_COLS, "fusion_annotation")
-    if "Fusion" not in df.columns and not {"Gene1", "Gene2"} <= set(df.columns):
-        raise SystemExit(
-            "error: fusion_annotation needs a 'Fusion' column or both 'Gene1' and 'Gene2'"
-        )
-
-    fusion = df["Fusion"] if "Fusion" in df.columns else pd.Series([None] * len(df))
-    gene1 = df["Gene1"] if "Gene1" in df.columns else pd.Series([None] * len(df))
-    gene2 = df["Gene2"] if "Gene2" in df.columns else pd.Series([None] * len(df))
-    keys = [
-        build_key(extract_gene_pair(f, g1, g2), c1, p1, c2, p2)
-        for f, g1, g2, c1, p1, c2, p2 in zip(
-            fusion, gene1, gene2, df["Chr1"], df["Pos1"], df["Chr2"], df["Pos2"]
-        )
-    ]
-
-    df = df.rename(columns={"TF": "TF_f1"})
-    df.insert(0, "fusion_key", keys)
-    return df
-
-
 def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
     df = _read(path, sep, "filtered_fusions")
     _require_cols(df, FILTERED_FUSIONS_KEY_COLS, "filtered_fusions")
+
+    is_drop = df["action"].astype("string").str.strip().str.lower() == "drop"
+    is_drop = is_drop.to_numpy(dtype=bool, na_value=False)
+    n_dropped = int(is_drop.sum())
+    df = df[~is_drop].copy()
 
     keys = []
     for fus, bp in zip(df["fusion"], df["breakpoint"]):
@@ -317,8 +272,8 @@ def load_filtered_fusions(path: str, sep: str) -> pd.DataFrame:
         c1, p1, c2, p2 = parsed
         keys.append(build_key(extract_gene_pair(fus), c1, p1, c2, p2))
 
-    df = df.rename(columns={"TF": "TF_f2"})
     df.insert(0, "fusion_key", keys)
+    df.attrs["n_dropped_action"] = n_dropped
     return df
 
 
@@ -604,51 +559,38 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
     return pd.DataFrame(rows, columns=cols).set_index("cluster")
 
 
-# --------------------------------------------------------------------------- #
-# Merge
-# --------------------------------------------------------------------------- #
-def merge(df_ann: pd.DataFrame, df_filt: pd.DataFrame) -> pd.DataFrame:
-    ann_cols = [c for c in df_ann.columns if c != "fusion_key"]
-    filt_cols = [c for c in df_filt.columns if c != "fusion_key"]
-
-    merged = df_ann.merge(df_filt, on="fusion_key", how="left", suffixes=("_f1", "_f2"))
-    return merged[["fusion_key"] + ann_cols + filt_cols]
-
-
-def attach_cluster_stats(merged: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
+def attach_cluster_stats(base: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
     """Append the fourteen per-cluster stat columns by matching ``cluster``."""
-    if "cluster" not in merged.columns:
+    if "cluster" not in base.columns:
         raise SystemExit(
-            "error: merged output has no 'cluster' column to join final_cff stats on "
-            "(expected from filtered_fusions)"
+            "error: filtered_fusions has no 'cluster' column to join final_cff stats on"
         )
-    joined = merged.join(stats, on="cluster")
+    joined = base.join(stats, on="cluster")
     for col in ("cluster_size", "n_arriba", "n_high", "n_med", "n_low"):
         joined[col] = joined[col].astype("Int64")
     return joined
 
 
-# Letter in CallMethod -> output column name.
+# Letter in filtered_fusions' tool column -> output column name.
 CALL_METHOD_FLAGS = (("A", "Arriba"), ("F", "FusionCatcher"), ("S", "StarFusion"))
 
 
-def add_call_method_flags(merged: pd.DataFrame) -> pd.DataFrame:
-    """Expand ``CallMethod`` into 0/1 ``Arriba`` / ``FusionCatcher`` / ``StarFusion``,
-    plus ``n_callers`` (its character count -- each letter is one caller).
+def add_call_method_flags(base: pd.DataFrame) -> pd.DataFrame:
+    """Expand ``tool`` (filtered_fusions) into 0/1 ``Arriba`` / ``FusionCatcher`` /
+    ``StarFusion``, plus ``n_callers`` (its character count -- each letter is one caller).
 
-    Case-insensitive letter membership; a missing/blank ``CallMethod`` gives 0 for
-    all three flags and ``n_callers``. New columns are appended at the end.
+    Case-insensitive letter membership; a missing/blank ``tool`` value gives 0 for
+    all three flags and ``n_callers`` for that row. New columns are appended at the end.
+
+    Note: this is filtered_fusions' ``tool`` column (a letter-set naming every caller
+    for this fusion call, e.g. ``"AFS"``) -- not to be confused with final_cff's ``tool``
+    column, which names a single caller per final_cff row.
     """
-    if "CallMethod" not in merged.columns:
-        raise SystemExit(
-            "error: merged output has no 'CallMethod' column to derive caller flags "
-            "from (expected from fusion_annotation)"
-        )
-    codes = merged["CallMethod"].map(lambda v: _clean(v).upper())
+    codes = base["tool"].map(lambda v: _clean(v).upper())
     for letter, col in CALL_METHOD_FLAGS:
-        merged[col] = codes.str.contains(letter, regex=False).astype(int)
-    merged["n_callers"] = codes.str.len()
-    return merged
+        base[col] = codes.str.contains(letter, regex=False).astype(int)
+    base["n_callers"] = codes.str.len()
+    return base
 
 
 # Known somatic_flags database names -> their own 0/1 output column, in this order.
@@ -685,7 +627,7 @@ def _parse_somatic_flags(val) -> set[str]:
     return {t.strip() for t in s.split(",") if t.strip()}
 
 
-def add_somatic_flag_columns(merged: pd.DataFrame) -> pd.DataFrame:
+def add_somatic_flag_columns(base: pd.DataFrame) -> pd.DataFrame:
     """One-hot encode ``somatic_flags`` into 21 named 0/1 columns, one per
     :data:`SOMATIC_FLAG_NAMES`.
 
@@ -695,35 +637,30 @@ def add_somatic_flag_columns(merged: pd.DataFrame) -> pd.DataFrame:
     column, no error). A missing/blank ``somatic_flags`` gives 0 for all 21.
     New columns are appended at the end, in ``SOMATIC_FLAG_NAMES`` order.
     """
-    if "somatic_flags" not in merged.columns:
+    if "somatic_flags" not in base.columns:
         raise SystemExit(
-            "error: merged output has no 'somatic_flags' column to encode "
-            "(expected from filtered_fusions)"
+            "error: filtered_fusions has no 'somatic_flags' column to encode"
         )
-    tokens = merged["somatic_flags"].map(_parse_somatic_flags)
+    tokens = base["somatic_flags"].map(_parse_somatic_flags)
     for name in SOMATIC_FLAG_NAMES:
-        merged[name] = tokens.map(lambda t, name=name: int(name in t))
-    return merged
+        base[name] = tokens.map(lambda t, name=name: int(name in t))
+    return base
 
 
 def summarize(
-    df_ann: pd.DataFrame,
     df_filt: pd.DataFrame,
     df_cff: pd.DataFrame,
     df_arriba: pd.DataFrame,
     stats: pd.DataFrame,
-    merged: pd.DataFrame,
+    output: pd.DataFrame,
 ) -> str:
-    filt_keys = set(df_filt["fusion_key"].dropna())
-    ann_keys = set(df_ann["fusion_key"].dropna())
-    matched = df_ann["fusion_key"].isin(filt_keys).sum()
-    unused = (~df_filt["fusion_key"].isin(ann_keys)).sum()
-    with_stats = merged["cluster_size"].notna().sum()
+    with_stats = output["cluster_size"].notna().sum()
     dropped = df_cff.attrs.get("n_dropped_na_cluster", 0)
+    dropped_action = df_filt.attrs.get("n_dropped_action", 0)
     arriba_calls = int(stats["n_arriba"].sum())
     return (
-        f"fusion_annotation rows: {len(df_ann)} | matched: {matched} | "
-        f"filtered_fusions rows unused: {unused} | output rows: {len(merged)}\n"
+        f"filtered_fusions rows: {len(df_filt)} (dropped action==drop: {dropped_action}) | "
+        f"output rows: {len(output)}\n"
         f"final_cff: {len(stats)} clusters | rows dropped (no cluster): {dropped} | "
         f"output rows with cluster stats: {with_stats}\n"
         f"arriba_fusions rows: {len(df_arriba)} | arriba calls in clusters: {arriba_calls}"
@@ -735,22 +672,14 @@ def summarize(
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Merge fusion_annotation + filtered_fusions and attach final_cff "
-        "per-cluster stats, writing one CSV for svm_text.py."
-    )
-    p.add_argument(
-        "--fusion-annotation",
-        required=True,
-        nargs="+",
-        metavar="FILE",
-        help="one or two fusion_annotation files (all columns kept). Two files "
-        "must share the same column names (any order) and are stacked row-wise; "
-        "overlapping fusions are not deduplicated.",
+        description="Merge filtered_fusions with final_cff per-cluster stats and "
+        "arriba_fusions confidence stats, writing one CSV for svm_text.py."
     )
     p.add_argument(
         "--filtered-fusions",
         required=True,
-        help="path to the filtered_fusions file (left-joined on fusion_key)",
+        help="path to the filtered_fusions file (base table for the output; "
+        "contributes fusion_key, tool, TF, somatic_flags)",
     )
     p.add_argument(
         "--final-cff",
@@ -774,23 +703,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
-    if not 1 <= len(args.fusion_annotation) <= 2:
-        raise SystemExit("error: --fusion-annotation takes one or two files")
-
-    df_ann = load_fusion_annotation(args.fusion_annotation, args.sep)
     df_filt = load_filtered_fusions(args.filtered_fusions, args.sep)
     df_cff = load_final_cff(args.final_cff, args.sep)
     df_arriba = load_arriba_fusions(args.arriba_fusions, args.sep)
 
     stats = cluster_stats(df_cff, df_arriba)
-    merged = merge(df_ann, df_filt)
-    merged = attach_cluster_stats(merged, stats)
-    merged = add_call_method_flags(merged)
-    merged = add_somatic_flag_columns(merged)
+    output = attach_cluster_stats(df_filt, stats)
+    output = add_call_method_flags(output)
+    output = add_somatic_flag_columns(output)
 
-    merged.to_csv(args.output, index=False)
-    print(summarize(df_ann, df_filt, df_cff, df_arriba, stats, merged))
-    print(f"wrote {len(merged)} rows x {merged.shape[1]} cols -> {args.output}")
+    output.to_csv(args.output, index=False)
+    print(summarize(df_filt, df_cff, df_arriba, stats, output))
+    print(f"wrote {len(output)} rows x {output.shape[1]} cols -> {args.output}")
 
 
 if __name__ == "__main__":
