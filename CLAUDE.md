@@ -75,6 +75,8 @@ fully-specified already.
 - **`train --label-col` default** is applied in `main()` after parsing (not via argparse `default=`)
   so that `evaluate`/`predict` can distinguish "flag omitted" from an explicit value and fall back
   to the model's stored column.
+- **`--sep`** (all three subcommands, default `,`) sets `load_dataset`'s `pd.read_csv` separator,
+  so TSV input (e.g. from `merge_fusion_calls.py --sep '\t'`) can be read without reformatting.
 
 ## Vault logging
 

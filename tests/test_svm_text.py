@@ -40,6 +40,21 @@ def test_select_feature_columns_returns_raw_dataframe_slice():
 
 
 # --------------------------------------------------------------------------- #
+# load_dataset
+# --------------------------------------------------------------------------- #
+def test_load_dataset_respects_sep_argument(tmp_path):
+    data_path = tmp_path / "data.txt"
+    data_path.write_text("score\ttool\tlabel\n1.0\tarriba\tpass\n2.0\tstarfusion\tdrop\n")
+
+    features, labels = svm_text.load_dataset(
+        str(data_path), ["score", "tool"], "label", sep="\t"
+    )
+
+    assert features["score"].tolist() == [1.0, 2.0]
+    assert labels.tolist() == ["pass", "drop"]
+
+
+# --------------------------------------------------------------------------- #
 # build_pipeline
 # --------------------------------------------------------------------------- #
 def test_build_pipeline_fits_mixed_numeric_and_categorical():
@@ -148,6 +163,32 @@ def test_train_reports_cv_fold_stability(tmp_path, capsys):
     mean_f1, std_f1 = float(match.group(1)), float(match.group(2))
     assert 0.0 <= mean_f1 <= 1.0
     assert std_f1 >= 0.0
+
+
+def test_train_accepts_sep_flag_for_tab_separated_data(tmp_path):
+    data_path = tmp_path / "train.txt"
+    data_path.write_text(
+        "score\ttool\tlabel\n"
+        "1.0\tarriba\tpass\n"
+        "2.0\tstarfusion\tdrop\n"
+        "3.0\tarriba\tpass\n"
+        "4.0\tstarfusion\tdrop\n"
+        "5.0\tarriba\tpass\n"
+        "6.0\tstarfusion\tdrop\n"
+    )
+    model_path = tmp_path / "model.joblib"
+    svm_text.main(
+        [
+            "train",
+            "--data", str(data_path),
+            "--text-col", "score,tool",
+            "--label-col", "label",
+            "--model-out", str(model_path),
+            "--cv-folds", "3",
+            "--sep", "\t",
+        ]
+    )
+    assert model_path.exists()
 
 
 def test_predict_requires_data(tmp_path):

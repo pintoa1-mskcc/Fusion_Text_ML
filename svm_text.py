@@ -62,10 +62,11 @@ def load_dataset(
     path: str,
     text_cols: list[str],
     label_col: str | None = None,
+    sep: str = ",",
 ) -> tuple[pd.DataFrame, pd.Series | None]:
     """Load a CSV and return (features, labels). labels is None if not requested."""
     try:
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, sep=sep)
     except FileNotFoundError:
         raise SystemExit(f"error: data file not found: {path}")
     except Exception as exc:  # noqa: BLE001 - surface pandas parse errors cleanly
@@ -156,7 +157,7 @@ def print_metrics(y_true, y_pred, labels: list) -> None:
 # --------------------------------------------------------------------------- #
 def cmd_train(args: argparse.Namespace) -> None:
     text_cols = parse_text_cols(args.text_col)
-    X, y = load_dataset(args.data, text_cols, args.label_col)
+    X, y = load_dataset(args.data, text_cols, args.label_col, sep=args.sep)
 
     if y.nunique() < 2:
         raise SystemExit(
@@ -229,7 +230,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     text_cols = parse_text_cols(args.text_col) if args.text_col else payload["text_cols"]
     label_col = args.label_col or payload["label_col"]
 
-    X, y = load_dataset(args.data, text_cols, label_col)
+    X, y = load_dataset(args.data, text_cols, label_col, sep=args.sep)
     y_pred = payload["pipeline"].predict(X)
 
     labels = payload.get("labels") or sorted(y.unique().tolist(), key=str)
@@ -246,7 +247,7 @@ def cmd_predict(args: argparse.Namespace) -> None:
     pipe = payload["pipeline"]
 
     text_cols = parse_text_cols(args.text_col) if args.text_col else payload["text_cols"]
-    X, _ = load_dataset(args.data, text_cols, None)
+    X, _ = load_dataset(args.data, text_cols, None, sep=args.sep)
     source = X.copy()
 
     preds = pipe.predict(X)
@@ -287,6 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="label column (train default: 'label'; "
             "evaluate default: value stored in the model)",
+        )
+        p.add_argument(
+            "--sep",
+            default=",",
+            help="field separator for --data (default: comma)",
         )
 
     p_train = sub.add_parser("train", help="fit and save a model")
