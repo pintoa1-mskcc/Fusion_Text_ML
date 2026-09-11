@@ -28,6 +28,21 @@ Run everything through the venv interpreter:
 .venv/bin/python svm_text.py ...
 ```
 
+### Docker
+
+`Dockerfile` builds an image that clones this repo fresh from GitHub (`main` branch) and installs
+`requirements.txt`; its entrypoint is `svm_text.py`, so container args are `svm_text.py` subcommand
+flags:
+
+```bash
+docker build -t text-ml-clinical-onsite .
+docker run --rm -v "$(pwd)":/data text-ml-clinical-onsite \
+    evaluate --data /data/merged.csv --model /data/model.joblib
+```
+
+`merge_fusion_calls.py` isn't wired up as an entrypoint — run it via `docker run ... python
+merge_fusion_calls.py ...`, overriding the entrypoint.
+
 ## `merge_fusion_calls.py`
 
 Builds a `fusion_key` (`GENE1::GENE2|chr1:pos1|chr2:pos2`) from `filtered_fusions` (after dropping
@@ -114,6 +129,7 @@ column contract.
 | `--data` | (required) | Path to a labelled CSV. |
 | `--text-col` | `text` | Feature column, or comma-separated list of feature columns. |
 | `--label-col` | `label` | Label column. |
+| `--sep` | `,` | Field separator for `--data` (all three subcommands support this, e.g. for TSV input from `merge_fusion_calls.py --sep '\t'`). |
 | `--model-out` | `model.joblib` | Output path for the saved model. |
 | `--cv-folds` | `5` | Stratified k-fold CV splits for the reported metrics; the smallest class must have at least this many rows. |
 | `--seed` | `42` | Random seed for the CV folds and the SVM. |
