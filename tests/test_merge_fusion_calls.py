@@ -171,6 +171,25 @@ def test_cluster_stats_cv_reads_is_zero_for_a_single_row_cluster(tmp_path):
     assert row["cv_reads"] == 0.0
 
 
+def test_cluster_stats_cv_reads_is_zero_when_all_reads_are_zero(tmp_path):
+    # mean and std are both 0 -> 0/0 would be NaN; must stay 0.0 so LinearSVC never sees NaN
+    cff_path = _write(
+        tmp_path / "final_cff.tsv",
+        FINAL_CFF_HEADER + "2\tarriba\t1\t1002\tGENEA\t2\t5001\tGENEB\t-1\t0\n",
+    )
+    arriba_path = _write(
+        tmp_path / "arriba_fusions.tsv",
+        "#gene1\tgene2\tbreakpoint1\tbreakpoint2\tconfidence\n"
+        "GENEA\tGENEB\t1:1002\t2:5001\thigh\n",
+    )
+    df_cff = load_final_cff(cff_path, "\t")
+    df_arriba = load_arriba_fusions(arriba_path, "\t")
+    row = cluster_stats(df_cff, df_arriba).loc["2"]
+
+    assert row["min_reads"] == 0.0  # split sentinel -1 -> span(0) alone
+    assert row["cv_reads"] == 0.0
+
+
 # --------------------------------------------------------------------------- #
 # n_callers (add_call_method_flags)
 # --------------------------------------------------------------------------- #

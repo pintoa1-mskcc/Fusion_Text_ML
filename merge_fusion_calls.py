@@ -541,7 +541,11 @@ def cluster_stats(df_cff: pd.DataFrame, df_arriba: pd.DataFrame) -> pd.DataFrame
                 "BP1_rao_score_callers": _side_rao_score_callers(grp["gene5_breakpoint"], grp["tool"]),
                 "BP2_rao_score_callers": _side_rao_score_callers(grp["gene3_breakpoint"], grp["tool"]),
                 "min_reads": grp["_reads"].min(),
-                "cv_reads": grp["_reads"].std(ddof=0) / grp["_reads"].mean(),
+                # all-zero reads -> mean 0 -> 0/0; define as 0.0 (no variation) so it's never NaN
+                "cv_reads": (
+                    0.0 if grp["_reads"].mean() == 0
+                    else grp["_reads"].std(ddof=0) / grp["_reads"].mean()
+                ),
                 "n_arriba": n_arriba,
                 "n_high": n_high,
                 "n_med": n_med,
